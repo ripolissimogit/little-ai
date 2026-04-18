@@ -3,70 +3,87 @@ import AppKit
 @MainActor
 final class Coordinator {
     private let menuBar = MenuBarController()
-    private let hotkey = HotkeyManager()
+    private let hotkey = DoubleShiftDetector()
     private let toolbar = FloatingToolbarController()
-    private let settings = SettingsStore.shared
 
     private var currentTarget: AXTextTarget?
 
     func start() {
-        menuBar.onSettings = { [weak self] in self?.openSettings() }
+        menuBar.onSettings = { Settings.show() }
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.install()
 
         hotkey.onTrigger = { [weak self] in
             Task { @MainActor in self?.handleTrigger() }
         }
-        hotkey.register()
+        hotkey.start()
 
-        toolbar.onAction = { [weak self] action, tone, includeContext in
-            self?.runAction(action, tone: tone, includeContext: includeContext)
+        toolbar.onAction = { [weak self] action, tone in
+            self?.runEdit(action: action, tone: tone)
         }
-        toolbar.onAccept = { [weak self] text in self?.applyResult(text) }
+        toolbar.onGenerate = { [weak self] prompt in
+            self?.runGenerate(prompt: prompt)
+        }
+        toolbar.onAccept = { [weak self] text, isInsertion in
+            self?.applyResult(text, isInsertion: isInsertion)
+        }
         toolbar.onDismiss = { [weak self] in self?.currentTarget = nil }
     }
 
     private func handleTrigger() {
-        guard let target = AXService.captureFocusedSelection() else {
+        guard let target = AXService.captureFocusedTarget() else {
             NSSound.beep()
             return
         }
         currentTarget = target
-        toolbar.show(near: target.anchorPoint, selectedText: target.selectedText)
+        toolbar.show(target: target)
     }
 
-    private func runAction(_ action: ActionType, tone: Tone?, includeContext: Bool) {
-        guard let target = currentTarget else { return }
-        guard let apiKey = settings.apiKey, !apiKey.isEmpty else {
-            toolbar.showError("API key mancante. Apri Impostazioni.")
-            return
-        }
+    private func runEdit(action: ActionType, tone: Tone?) {
+        guard let target = currentTarget, !target.selectedText.isEmpty else { return }
+        guard let apiKey = ensureAPIKey() else { return }
         toolbar.showLoading()
-        let provider = AnthropicProvider(apiKey: apiKey, model: settings.model)
-        let request = PromptBuilder.build(
-            action: action,
-            tone: tone,
-            selection: target.selectedText,
-            broaderContext: includeContext ? target.broaderContext : nil
-        )
+        let request = PromptBuilder.buildEdit(action: action, tone: tone, selection: target.selectedText)
+        runRequest(request, apiKey: apiKey, isInsertion: false)
+    }
+
+    private func runGenerate(prompt: String) {
+        guard currentTarget != nil else { return }
+        guard let apiKey = ensureAPIKey() else { return }
+        toolbar.showLoading()
+        let request = PromptBuilder.buildGenerate(prompt: prompt)
+        runRequest(request, apiKey: apiKey, isInsertion: true)
+    }
+
+    private func runRequest(_ request: AIRequest, apiKey: String, isInsertion: Bool) {
+        let provider = AnthropicProvider(apiKey: apiKey)
         Task { @MainActor in
             do {
                 let result = try await provider.complete(request)
-                toolbar.showPreview(original: target.selectedText, result: result)
+                if Settings.skipPreview {
+                    applyResult(result, isInsertion: isInsertion)
+                } else {
+                    toolbar.showPreview(result: result, isInsertion: isInsertion)
+                }
             } catch {
                 toolbar.showError("Errore: \(error.localizedDescription)")
             }
         }
     }
 
-    private func applyResult(_ text: String) {
-        guard let target = currentTarget else { return }
-        AXService.replaceSelection(in: target.element, with: text)
-        toolbar.hide()
-        currentTarget = nil
+    private func ensureAPIKey() -> String? {
+        guard let apiKey = Settings.apiKey, !apiKey.isEmpty else {
+            toolbar.showError("API key mancante. Apri Impostazioni.")
+            return nil
+        }
+        return apiKey
     }
 
-    private func openSettings() {
-        SettingsWindow.shared.show()
+    private func applyResult(_ text: String, isInsertion: Bool) {
+        guard let target = currentTarget else { return }
+        // Hide first so the focus/activation dance can land on the original app cleanly.
+        toolbar.hide()
+        AXService.writeText(text, to: target)
+        currentTarget = nil
     }
 }

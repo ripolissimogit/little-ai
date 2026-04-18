@@ -2,7 +2,7 @@ import Foundation
 
 struct AnthropicProvider: AIProvider {
     let apiKey: String
-    let model: String
+    var model: String = Settings.model
     var endpoint: URL = URL(string: "https://api.anthropic.com/v1/messages")!
     var maxTokens: Int = 4096
 
@@ -17,9 +17,7 @@ struct AnthropicProvider: AIProvider {
             "model": model,
             "max_tokens": maxTokens,
             "system": request.system,
-            "messages": [
-                ["role": "user", "content": request.user]
-            ]
+            "messages": [["role": "user", "content": request.user]]
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -40,9 +38,7 @@ struct AnthropicProvider: AIProvider {
             let content: [Content]
         }
         let decoded = try JSONDecoder().decode(Response.self, from: data)
-        let text = decoded.content
-            .compactMap { $0.type == "text" ? $0.text : nil }
-            .joined()
+        let text = decoded.content.compactMap { $0.type == "text" ? $0.text : nil }.joined()
         guard !text.isEmpty else { throw AIProviderError.missingContent }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }

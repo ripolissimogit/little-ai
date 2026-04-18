@@ -5,6 +5,8 @@ enum ActionType: String, CaseIterable, Identifiable {
     case extend
     case reduce
     case tone
+    case translate
+    case generate
 
     var id: String { rawValue }
 }
