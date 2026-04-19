@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "LittleAI",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .executable(name: "LittleAI", targets: ["LittleAI"])
     ],
