@@ -47,6 +47,8 @@ if [[ -f "icon.png" ]]; then
     iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
     rm -rf "$ICONSET"
     ICON_ENTRY="<key>CFBundleIconFile</key><string>AppIcon</string>"
+    # Also copy a smaller PNG used as the menu bar icon.
+    sips -z 36 36 icon.png --out "$APP_DIR/Contents/Resources/MenuIcon.png" >/dev/null
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -70,8 +72,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>$BUILD_NUM</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>

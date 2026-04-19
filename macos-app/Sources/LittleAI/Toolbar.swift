@@ -51,6 +51,11 @@ final class Toolbar {
             Log.info("vm.onCancel (Annulla button)", tag: "ui")
             self?.hide()
         }
+        vm.onContentSizeChange = { [weak self] in
+            // Defer to the next runloop tick so SwiftUI has finished re-rendering the
+            // new text before we measure with sizeThatFits.
+            DispatchQueue.main.async { self?.relayout() }
+        }
 
         let hc = NSHostingController(rootView: RootView(vm: vm))
         hosting = hc
@@ -97,13 +102,12 @@ final class Toolbar {
         // Accessory apps can't receive key status for their panels — switch to .regular for
         // the duration the panel is visible, restore .accessory on hide(). Without this the
         // panel stays isKey=false and SwiftUI buttons miss clicks.
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         p.makeKeyAndOrderFront(nil)
         // Clear first responder so the first button doesn't get a focus ring. The
         // compose TextField sets its own focus via @FocusState when it appears.
         p.makeFirstResponder(nil)
-        Log.info("toolbar shown isKey=\(p.isKeyWindow) isVisible=\(p.isVisible) policy=regular", tag: "ui")
+        Log.info("toolbar shown isKey=\(p.isKeyWindow) isVisible=\(p.isVisible)", tag: "ui")
         installDismissMonitors()
     }
 
@@ -115,7 +119,6 @@ final class Toolbar {
         panel = nil
         hosting = nil
         target = nil
-        NSApp.setActivationPolicy(.accessory)
         onDismiss?()
     }
 
@@ -156,6 +159,23 @@ final class Toolbar {
                 Log.info("dismiss: Esc pressed", tag: "ui")
                 self?.hide()
                 return nil
+            }
+            // Forward standard editing shortcuts to the first responder. Borderless
+            // panels can miss main-menu routing for ⌘V/⌘C/⌘X/⌘A, so we dispatch manually.
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if mods == .command, let chars = event.charactersIgnoringModifiers {
+                let sel: Selector?
+                switch chars.lowercased() {
+                case "v": sel = #selector(NSText.paste(_:))
+                case "c": sel = #selector(NSText.copy(_:))
+                case "x": sel = #selector(NSText.cut(_:))
+                case "a": sel = #selector(NSResponder.selectAll(_:))
+                default: sel = nil
+                }
+                if let sel, NSApp.sendAction(sel, to: nil, from: nil) {
+                    Log.debug("forwarded ⌘\(chars) to first responder", tag: "ui")
+                    return nil
+                }
             }
             return event
         }
@@ -269,6 +289,7 @@ final class ViewModel: ObservableObject {
     var onGenerate: ((String) -> Void)?
     var onAccept: ((String, Bool) -> Void)?
     var onCancel: (() -> Void)?
+    var onContentSizeChange: (() -> Void)?
 
     func reset(selection: String) {
         self.selection = selection
@@ -350,13 +371,18 @@ private struct Compose: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sparkles").foregroundStyle(.secondary)
-            TextField("Cosa vuoi scrivere?", text: $vm.composeText)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(.secondary)
+                .padding(.top, 3)
+            TextField("Cosa vuoi scrivere?", text: $vm.composeText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($focused)
-                .onSubmit(submit)
+                .onChange(of: vm.composeText) { _, newValue in
+                    Log.debug("compose onChange len=\(newValue.count)", tag: "ui")
+                    vm.onContentSizeChange?()
+                }
             Button(action: submit) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 20))
             }
@@ -364,6 +390,7 @@ private struct Compose: View {
             .disabled(vm.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .keyboardShortcut(.defaultAction)
         }
+        .padding(.vertical, 2)
         .onAppear { focused = true }
     }
 

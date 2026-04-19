@@ -9,7 +9,7 @@ final class App: NSObject, NSApplicationDelegate {
         let app = NSApplication.shared
         let delegate = App()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(.regular)
         app.run()
     }
 
@@ -27,9 +27,21 @@ final class App: NSObject, NSApplicationDelegate {
         let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         Log.info("accessibility trusted=\(trusted)", tag: "app")
 
+        // Minimal main menu — needed so the standard ⌘X/⌘C/⌘V/⌘A shortcuts reach the
+        // first responder (SwiftUI TextField) when the panel is key. Without this,
+        // pasting into the compose field silently fails.
+        NSApp.mainMenu = Self.buildMainMenu()
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Little AI")
-        item.button?.image?.isTemplate = true
+        if let url = Bundle.main.url(forResource: "MenuIcon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            img.size = NSSize(width: 18, height: 18)
+            item.button?.image = img
+        } else {
+            let img = NSImage(systemSymbolName: "hand.point.up.left.fill", accessibilityDescription: "Little AI")
+            img?.isTemplate = true
+            item.button?.image = img
+        }
         let menu = NSMenu()
         let toggle = NSMenuItem(title: "Inserisci senza anteprima", action: #selector(toggleSkipPreview(_:)), keyEquivalent: "")
         toggle.target = self
@@ -185,6 +197,34 @@ final class App: NSObject, NSApplicationDelegate {
         toolbar.hide()
         AX.write(text, to: t)
         target = nil
+    }
+}
+
+extension App {
+    static func buildMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Nascondi LittleAI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Esci", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Modifica")
+        editMenu.addItem(NSMenuItem(title: "Annulla", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Ripristina", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Taglia", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copia", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Incolla", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Seleziona tutto", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        return main
     }
 }
 
