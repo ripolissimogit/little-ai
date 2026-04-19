@@ -1,7 +1,7 @@
 import Foundation
 
 enum Action: String, CaseIterable, Identifiable {
-    case correct, extend, reduce, tone, translate
+    case correct, extend, reduce, tone, translate, explain
     var id: String { rawValue }
 }
 
@@ -62,6 +62,8 @@ enum Prompt {
             instruction = "Riscrivi il testo adattandolo a un tono \(t), mantenendo intatto il significato."
         case .translate:
             instruction = "Rileva la lingua del testo: se è italiano traducilo in inglese, se è inglese traducilo in italiano. Mantieni registro, tono e formattazione. Restituisci solo la traduzione."
+        case .explain:
+            instruction = "Spiega in italiano cosa significa o cosa implica il testo. Sii conciso: 2-3 frasi. Non riformulare il testo, spiegalo. Restituisci solo la spiegazione."
         }
         var user = """
         Istruzione: \(instruction)

@@ -6,6 +6,9 @@ struct Target {
     let selectionRect: CGRect?
     let fallbackCursor: CGPoint
     let sourceApp: NSRunningApplication?
+    /// True if the focused element's value can be mutated (editable text field/area).
+    /// False for PDF selections, static text, received email threads, etc.
+    let isEditable: Bool
 }
 
 /// Accessibility bridge: reads the focused text selection from any app, writes it back via
@@ -36,14 +39,31 @@ enum AX {
         }
         let rect = selectionRect(element)
         let app = NSWorkspace.shared.frontmostApplication
-        Log.info("captureFocused done source=\(source) selLen=\(selected.count) rect=\(rect.map { "\($0)" } ?? "nil") app=\(app?.localizedName ?? "?")", tag: "ax")
+        let editable = isEditable(element)
+        Log.info("captureFocused done source=\(source) selLen=\(selected.count) editable=\(editable) rect=\(rect.map { "\($0)" } ?? "nil") app=\(app?.localizedName ?? "?")", tag: "ax")
 
         return Target(
             selection: selected,
             selectionRect: rect,
             fallbackCursor: NSEvent.mouseLocation,
-            sourceApp: app
+            sourceApp: app,
+            isEditable: editable
         )
+    }
+
+    /// Returns true when the focused element accepts value mutation (editable text).
+    /// Static text, PDF selections, received email bodies etc. return false.
+    /// On Electron/WebArea the AX role is AXWebArea and the settable flag is often
+    /// unreliable — we default to editable (optimistic) because most focused selections
+    /// in browsers/Electron apps are in editable fields.
+    private static func isEditable(_ el: AXUIElement) -> Bool {
+        let role = attrString(el, kAXRoleAttribute) ?? ""
+        if role == "AXStaticText" { return false }
+        if role == "AXWebArea" { return true } // optimistic — sniff/paste will tell
+        var settable = DarwinBoolean(false)
+        let status = AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable)
+        if status != .success { return true } // attribute doesn't exist → optimistic
+        return settable.boolValue
     }
 
     static func write(_ text: String, to target: Target) {

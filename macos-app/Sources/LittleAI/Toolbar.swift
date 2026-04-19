@@ -7,7 +7,7 @@ import SwiftUI
 final class Toolbar {
     var onEdit: ((Action, Tone?) -> Void)?
     var onGenerate: ((String) -> Void)?
-    var onAccept: ((String, Bool) -> Void)?
+    var onAccept: ((String, ApplyMode) -> Void)?
     var onDismiss: (() -> Void)?
 
     private var panel: KeyablePanel?
@@ -33,7 +33,7 @@ final class Toolbar {
             hide()
         }
         self.target = target
-        vm.reset(selection: target.selection)
+        vm.reset(selection: target.selection, isEditable: target.isEditable)
         Log.info("toolbar show selLen=\(target.selection.count) rect=\(target.selectionRect.map { "\($0)" } ?? "nil")", tag: "ui")
         vm.onAction = { [weak self] a, t in
             Log.info("vm.onAction action=\(a.rawValue) tone=\(t?.rawValue ?? "-")", tag: "ui")
@@ -43,9 +43,9 @@ final class Toolbar {
             Log.info("vm.onGenerate promptLen=\(p.count)", tag: "ui")
             self?.onGenerate?(p)
         }
-        vm.onAccept = { [weak self] text, insert in
-            Log.info("vm.onAccept insert=\(insert) len=\(text.count)", tag: "ui")
-            self?.onAccept?(text, insert)
+        vm.onAccept = { [weak self] text, mode in
+            Log.info("vm.onAccept mode=\(mode) len=\(text.count)", tag: "ui")
+            self?.onAccept?(text, mode)
         }
         vm.onCancel = { [weak self] in
             Log.info("vm.onCancel (Annulla button)", tag: "ui")
@@ -136,9 +136,9 @@ final class Toolbar {
         refocus()
     }
 
-    func setPreview(result: String, insert: Bool) {
-        Log.info("setPreview resultLen=\(result.count) insert=\(insert)", tag: "ui")
-        vm.state = .preview(result, insert)
+    func setPreview(result: String, mode: ApplyMode) {
+        Log.info("setPreview resultLen=\(result.count) mode=\(mode)", tag: "ui")
+        vm.state = .preview(result, mode)
         relayout()
         refocus()
     }
@@ -271,29 +271,38 @@ final class PanelDelegate: NSObject, NSWindowDelegate {
     }
 }
 
+/// How the generated result is delivered to the user.
+enum ApplyMode {
+    case replace  // selection → ⌘V in source app (overwrites selection)
+    case insert   // compose → ⌘V at cursor
+    case copy     // readonly source → pasteboard only, no paste
+}
+
 @MainActor
 final class ViewModel: ObservableObject {
     enum State {
         case idle
         case compose
         case loading
-        case preview(String, Bool)
+        case preview(String, ApplyMode)
         case error(String)
     }
 
     @Published var state: State = .idle
     @Published var selection: String = ""
     @Published var composeText: String = ""
+    @Published var isEditable: Bool = true
 
     var onAction: ((Action, Tone?) -> Void)?
     var onGenerate: ((String) -> Void)?
-    var onAccept: ((String, Bool) -> Void)?
+    var onAccept: ((String, ApplyMode) -> Void)?
     var onCancel: (() -> Void)?
     var onContentSizeChange: (() -> Void)?
 
-    func reset(selection: String) {
+    func reset(selection: String, isEditable: Bool) {
         self.selection = selection
         self.composeText = ""
+        self.isEditable = isEditable
         state = selection.isEmpty ? .compose : .idle
     }
 }
@@ -315,10 +324,15 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch vm.state {
-        case .idle: ActionBar(vm: vm)
+        case .idle:
+            if vm.isEditable {
+                ActionBar(vm: vm)
+            } else {
+                ReadonlyActionBar(vm: vm)
+            }
         case .compose: Compose(vm: vm)
         case .loading: Loading()
-        case let .preview(result, insert): Preview(result: result, insert: insert, vm: vm)
+        case let .preview(result, mode): Preview(result: result, mode: mode, vm: vm)
         case let .error(message): ErrorRow(message: message, vm: vm)
         }
     }
@@ -347,8 +361,25 @@ private struct ActionBar: View {
             Spacer(minLength: 0)
         }
     }
+}
 
-    private struct Item: View {
+private struct ReadonlyActionBar: View {
+    @ObservedObject var vm: ViewModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ActionBar.Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil) }
+            ActionBar.Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil) }
+            Spacer(minLength: 0)
+            Text("sola lettura")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+extension ActionBar {
+    struct Item: View {
         let symbol: String
         let label: String
         let action: () -> Void
@@ -412,8 +443,16 @@ private struct Loading: View {
 
 private struct Preview: View {
     let result: String
-    let insert: Bool
+    let mode: ApplyMode
     @ObservedObject var vm: ViewModel
+
+    private var acceptLabel: String {
+        switch mode {
+        case .replace: return "Sostituisci"
+        case .insert: return "Inserisci"
+        case .copy: return "Copia"
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -433,9 +472,9 @@ private struct Preview: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(insert ? "Inserisci" : "Sostituisci") {
-                    Log.info("Preview: Accept tapped insert=\(insert)", tag: "ui")
-                    vm.onAccept?(result, insert)
+                Button(acceptLabel) {
+                    Log.info("Preview: Accept tapped mode=\(mode)", tag: "ui")
+                    vm.onAccept?(result, mode)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)

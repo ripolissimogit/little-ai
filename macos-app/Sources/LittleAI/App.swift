@@ -69,7 +69,7 @@ final class App: NSObject, NSApplicationDelegate {
 
         toolbar.onEdit = { [weak self] action, tone in self?.runEdit(action: action, tone: tone) }
         toolbar.onGenerate = { [weak self] prompt in self?.runGenerate(prompt: prompt) }
-        toolbar.onAccept = { [weak self] text, insert in self?.apply(text, insert: insert) }
+        toolbar.onAccept = { [weak self] text, mode in self?.apply(text, mode: mode) }
         toolbar.onDismiss = { [weak self] in
             self?.target = nil
             Log.debug("toolbar dismissed", tag: "app")
@@ -135,7 +135,7 @@ final class App: NSObject, NSApplicationDelegate {
             Log.warn("runEdit ignored — no target or empty selection", tag: "app")
             return
         }
-        Log.info("runEdit action=\(action.rawValue) tone=\(tone?.rawValue ?? "-") selLen=\(t.selection.count) ctxLen=\(context?.count ?? 0)", tag: "app")
+        Log.info("runEdit action=\(action.rawValue) tone=\(tone?.rawValue ?? "-") selLen=\(t.selection.count) ctxLen=\(context?.count ?? 0) editable=\(t.isEditable)", tag: "app")
         toolbar.setLoading()
         // Wait up to ~500ms for the OCR context task to finish, if it's still running.
         Task { @MainActor [weak self] in
@@ -150,21 +150,23 @@ final class App: NSObject, NSApplicationDelegate {
                 }
             }
             guard let self else { return }
-            self.complete(Prompt.edit(action: action, tone: tone, selection: t.selection, context: self.context), insert: false)
+            let mode: ApplyMode = t.isEditable ? .replace : .copy
+            self.complete(Prompt.edit(action: action, tone: tone, selection: t.selection, context: self.context), mode: mode)
         }
     }
 
     private func runGenerate(prompt: String) {
-        guard target != nil else {
+        guard let t = target else {
             Log.warn("runGenerate ignored — no target", tag: "app")
             return
         }
         Log.info("runGenerate promptLen=\(prompt.count)", tag: "app")
         toolbar.setLoading()
-        complete(Prompt.generate(prompt: prompt), insert: true)
+        let mode: ApplyMode = t.isEditable ? .insert : .copy
+        complete(Prompt.generate(prompt: prompt), mode: mode)
     }
 
-    private func complete(_ req: AIRequest, insert: Bool) {
+    private func complete(_ req: AIRequest, mode: ApplyMode) {
         if inFlight {
             Log.warn("complete ignored — another request already in flight", tag: "app")
             return
@@ -175,11 +177,11 @@ final class App: NSObject, NSApplicationDelegate {
             do {
                 let result = try await Anthropic.complete(req)
                 if Prefs.skipPreview {
-                    Log.info("complete ok (skipPreview) → applying directly", tag: "app")
-                    apply(result, insert: insert)
+                    Log.info("complete ok (skipPreview) → applying directly mode=\(mode)", tag: "app")
+                    apply(result, mode: mode)
                 } else {
-                    Log.info("complete ok → showing preview", tag: "app")
-                    toolbar.setPreview(result: result, insert: insert)
+                    Log.info("complete ok → showing preview mode=\(mode)", tag: "app")
+                    toolbar.setPreview(result: result, mode: mode)
                 }
             } catch {
                 Log.error("complete failed: \(error.localizedDescription)", tag: "app")
@@ -188,14 +190,22 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func apply(_ text: String, insert: Bool) {
-        guard let t = target else {
-            Log.error("apply ignored — no target", tag: "app")
-            return
-        }
-        Log.info("apply insert=\(insert) textLen=\(text.count)", tag: "app")
+    private func apply(_ text: String, mode: ApplyMode) {
+        Log.info("apply mode=\(mode) textLen=\(text.count)", tag: "app")
         toolbar.hide()
-        AX.write(text, to: t)
+        switch mode {
+        case .replace, .insert:
+            guard let t = target else {
+                Log.error("apply ignored — no target", tag: "app")
+                return
+            }
+            AX.write(text, to: t)
+        case .copy:
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+            Log.info("copied result to pasteboard", tag: "app")
+        }
         target = nil
     }
 }
