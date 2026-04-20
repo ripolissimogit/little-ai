@@ -131,13 +131,16 @@ enum Anthropic {
     }
 
     static func complete(_ request: AIRequest) async throws -> String {
-        let keyPreview = maskKey(Secrets.anthropicAPIKey)
+        guard let apiKey = Secrets.anthropicAPIKey else {
+            throw APIError(status: 0, message: "API key Anthropic mancante. Apri Impostazioni (⌘,) dal menu bar.")
+        }
+        let keyPreview = maskKey(apiKey)
         Log.info("request model=\(model) systemLen=\(request.system.count) userLen=\(request.user.count) key=\(keyPreview)", tag: "ai")
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(Secrets.anthropicAPIKey, forHTTPHeaderField: "x-api-key")
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         let bodyDict: [String: Any] = [
             "model": model,

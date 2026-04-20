@@ -13,13 +13,16 @@ enum OpenAI {
     }
 
     static func complete(_ request: AIRequest) async throws -> String {
-        let keyPreview = maskKey(Secrets.openAIAPIKey)
+        guard let apiKey = Secrets.openAIAPIKey else {
+            throw APIError(status: 0, message: "API key OpenAI mancante. Apri Impostazioni (⌘,) dal menu bar.")
+        }
+        let keyPreview = maskKey(apiKey)
         Log.info("request model=\(model) systemLen=\(request.system.count) userLen=\(request.user.count) key=\(keyPreview)", tag: "ai.openai")
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(Secrets.openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 4096,

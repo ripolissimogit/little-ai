@@ -46,7 +46,11 @@ enum Log {
         Axiom.start()
         info("=== LittleAI boot v\(version) pid=\(ProcessInfo.processInfo.processIdentifier) ===", tag: "app")
         info("log file: \(fileURL.path)", tag: "app")
-        info("axiom dataset: \(Secrets.axiomDataset)", tag: "app")
+        if Secrets.axiomToken != nil {
+            info("axiom sink enabled dataset=\(Secrets.axiomDataset)", tag: "app")
+        } else {
+            info("axiom sink disabled (no token in Keychain)", tag: "app")
+        }
     }
 
     static func debug(_ message: @autoclosure () -> String, tag: String = "app") { write(.debug, tag, message()) }
@@ -74,9 +78,14 @@ enum Log {
 }
 
 /// Axiom.co ingest sink. Buffers events and POSTs batches. Silent on transport errors
-/// (writes to stderr, not to Log, to avoid feedback loops).
+/// (writes to stderr, not to Log, to avoid feedback loops). Disabled when no token is
+/// stored in the Keychain — users who don't want remote telemetry simply leave the
+/// Axiom fields empty in Settings.
 enum Axiom {
-    private static let endpoint = URL(string: "https://api.axiom.co/v1/datasets/\(Secrets.axiomDataset)/ingest")!
+    private static func endpoint() -> URL? {
+        guard Secrets.axiomToken != nil else { return nil }
+        return URL(string: "https://api.axiom.co/v1/datasets/\(Secrets.axiomDataset)/ingest")
+    }
     private static let queue = DispatchQueue(label: "ai.little.LittleAI.axiom")
     private static var buffer: [[String: Any]] = []
     private static var timer: DispatchSourceTimer?
@@ -115,10 +124,11 @@ enum Axiom {
     }
 
     private static func send(_ events: [[String: Any]]) {
+        guard let url = endpoint(), let token = Secrets.axiomToken else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: events) else { return }
-        var req = URLRequest(url: endpoint)
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.setValue("Bearer \(Secrets.axiomToken)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = data
         URLSession.shared.dataTask(with: req) { data, resp, err in

@@ -43,6 +43,10 @@ final class App: NSObject, NSApplicationDelegate {
             item.button?.image = img
         }
         let menu = NSMenu()
+        let settingsItem = NSMenuItem(title: "Impostazioni…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
         let toggle = NSMenuItem(title: "Inserisci senza anteprima", action: #selector(toggleSkipPreview(_:)), keyEquivalent: "")
         toggle.target = self
         toggle.state = Prefs.skipPreview ? .on : .off
@@ -87,6 +91,15 @@ final class App: NSObject, NSApplicationDelegate {
             self?.target = nil
             Log.debug("toolbar dismissed", tag: "app")
         }
+
+        if !SettingsWindow.isConfigured {
+            Log.info("no API keys configured — opening Settings", tag: "app")
+            SettingsWindow.show()
+        }
+    }
+
+    @objc private func openSettings(_ sender: NSMenuItem) {
+        SettingsWindow.show()
     }
 
     @objc private func toggleSkipPreview(_ sender: NSMenuItem) {
