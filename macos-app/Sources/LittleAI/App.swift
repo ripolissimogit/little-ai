@@ -35,7 +35,7 @@ final class App: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let url = Bundle.main.url(forResource: "MenuIcon", withExtension: "png"),
            let img = NSImage(contentsOf: url) {
-            img.size = NSSize(width: 18, height: 18)
+            img.size = NSSize(width: 20, height: 20)
             item.button?.image = img
         } else {
             let img = NSImage(systemSymbolName: "hand.point.up.left.fill", accessibilityDescription: "Little AI")

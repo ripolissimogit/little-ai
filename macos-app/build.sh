@@ -1,24 +1,34 @@
 #!/bin/bash
 # Build LittleAI come .app bundle firmato con Developer ID.
-# - Se esiste icon.png (1024x1024) accanto a questo script, lo converte in AppIcon.icns
-#   e lo integra nel bundle.
-# - Con il flag --install copia l'.app in /Applications.
+# - Se esiste icon.png accanto a questo script, lo converte in AppIcon.icns e lo integra.
+# Flags:
+#   --install   Copia l'.app in /Applications dopo il build.
+#   --dmg       Crea un DMG notarizzato e stapled pronto per la distribuzione.
+# Notarization keychain profile: "littleai-notary" (creato una tantum con notarytool
+# store-credentials).
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-CONFIG="${1:-debug}"
+CONFIG="debug"
 INSTALL=false
-if [[ "${2:-}" == "--install" || "${1:-}" == "--install" ]]; then
-    INSTALL=true
-    [[ "$CONFIG" == "--install" ]] && CONFIG="debug"
-fi
+MAKE_DMG=false
+for arg in "$@"; do
+    case "$arg" in
+        release|debug) CONFIG="$arg" ;;
+        --install)     INSTALL=true ;;
+        --dmg)         MAKE_DMG=true; CONFIG="release" ;;
+        *) echo "Unknown arg: $arg"; exit 2 ;;
+    esac
+done
 
 IDENTITY="Developer ID Application: Claudio Ripoli (6T98N5PN3Y)"
 BUNDLE_ID="ai.little.LittleAI"
 APP_NAME="LittleAI"
-VERSION="0.2"
+DISPLAY_NAME="Little AI"
+VERSION="0.6"
 BUILD_NUM="1"
+NOTARY_PROFILE="littleai-notary"
 
 swift build -c "$CONFIG"
 
@@ -47,8 +57,8 @@ if [[ -f "icon.png" ]]; then
     iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
     rm -rf "$ICONSET"
     ICON_ENTRY="<key>CFBundleIconFile</key><string>AppIcon</string>"
-    # Also copy a smaller PNG used as the menu bar icon.
-    sips -z 36 36 icon.png --out "$APP_DIR/Contents/Resources/MenuIcon.png" >/dev/null
+    # Also copy a smaller PNG used as the menu bar icon (40pt @2x).
+    sips -z 40 40 icon.png --out "$APP_DIR/Contents/Resources/MenuIcon.png" >/dev/null
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -63,7 +73,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
     <key>CFBundleDisplayName</key>
-    <string>Little AI</string>
+    <string>$DISPLAY_NAME</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -81,11 +91,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --options runtime \
-    --sign "$IDENTITY" \
-    --identifier "$BUNDLE_ID" \
-    --timestamp=none \
-    "$APP_DIR"
+# Codesign with hardened runtime + timestamp (required for notarization when --dmg).
+CODESIGN_FLAGS=(--force --options runtime --sign "$IDENTITY" --identifier "$BUNDLE_ID")
+if $MAKE_DMG; then
+    CODESIGN_FLAGS+=(--timestamp)
+else
+    CODESIGN_FLAGS+=(--timestamp=none)
+fi
+codesign "${CODESIGN_FLAGS[@]}" "$APP_DIR"
 
 echo ""
 echo "Built and signed: $APP_DIR"
@@ -93,12 +106,45 @@ codesign -dv "$APP_DIR" 2>&1 | grep -E "Identifier|TeamIdentifier"
 
 if $INSTALL; then
     DEST="/Applications/$APP_NAME.app"
-    # Quit any running instance so rm/cp can succeed.
     pkill -x "$APP_NAME" 2>/dev/null || true
     sleep 1
     rm -rf "$DEST"
     cp -R "$APP_DIR" "$DEST"
-    # Clear Gatekeeper quarantine if present.
     xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
     echo "Installed to $DEST"
+fi
+
+if $MAKE_DMG; then
+    DIST_DIR="dist"
+    rm -rf "$DIST_DIR"
+    mkdir -p "$DIST_DIR"
+    DMG_STAGING="$DIST_DIR/staging"
+    mkdir -p "$DMG_STAGING"
+    cp -R "$APP_DIR" "$DMG_STAGING/"
+    ln -s /Applications "$DMG_STAGING/Applications"
+
+    DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+    echo ""
+    echo "Creating DMG: $DMG_PATH"
+    hdiutil create -volname "$DISPLAY_NAME" \
+        -srcfolder "$DMG_STAGING" \
+        -ov -format UDZO \
+        "$DMG_PATH" >/dev/null
+    rm -rf "$DMG_STAGING"
+
+    echo "Signing DMG..."
+    codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
+
+    echo "Submitting to Apple for notarization (this takes ~2-5 min)..."
+    xcrun notarytool submit "$DMG_PATH" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait
+
+    echo "Stapling ticket..."
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+
+    echo ""
+    echo "✓ Ready to distribute: $DMG_PATH"
+    ls -lh "$DMG_PATH"
 fi
