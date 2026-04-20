@@ -41,12 +41,27 @@ enum Prompt {
     blocco, senza virgolette di apertura/chiusura.
     """
 
-    private static let generateEN = """
-    You are a writing assistant embedded in a desktop app. The user describes in Italian what \
-    they want to communicate; you produce the final text IN ENGLISH to be inserted at the \
-    cursor. Return ONLY the English text, with no preamble, no commentary, no code fences, and \
-    no surrounding quotes.
-    """
+    /// ISO 639-1 codes → English language name. The user prefixes their prompt with one of
+    /// these codes (e.g. "fr Puoi scrivere...") and the system prompt instructs Claude to
+    /// produce the final text in that language.
+    private static let languageNames: [String: String] = [
+        "en": "English", "fr": "French", "es": "Spanish", "de": "German",
+        "pt": "Portuguese", "it": "Italian", "nl": "Dutch", "sv": "Swedish",
+        "no": "Norwegian", "da": "Danish", "fi": "Finnish", "pl": "Polish",
+        "cs": "Czech", "ro": "Romanian", "hu": "Hungarian", "el": "Greek",
+        "tr": "Turkish", "ru": "Russian", "uk": "Ukrainian", "ar": "Arabic",
+        "he": "Hebrew", "hi": "Hindi", "ja": "Japanese", "ko": "Korean",
+        "zh": "Chinese", "th": "Thai", "vi": "Vietnamese", "id": "Indonesian",
+    ]
+
+    private static func generateSystemFor(language: String) -> String {
+        """
+        You are a writing assistant embedded in a desktop app. The user describes (typically \
+        in Italian) what they want to communicate; you produce the final text IN \(language.uppercased()) \
+        to be inserted at the cursor. Return ONLY the text in \(language), with no preamble, \
+        no commentary, no code fences, and no surrounding quotes.
+        """
+    }
 
     static func edit(action: Action, tone: Tone?, selection: String, context: String?) -> AIRequest {
         let instruction: String
@@ -86,14 +101,20 @@ enum Prompt {
         return AIRequest(system: editSystem, user: user)
     }
 
-    /// If the prompt starts with "EN " (case-insensitive) the flag is stripped and the output
-    /// will be in English. Otherwise defaults to Italian.
+    /// If the prompt starts with a 2-letter ISO 639-1 language code followed by a space
+    /// (e.g. "fr ...", "ja ...", "es ..."), the output is produced in that language and
+    /// the code is stripped from the user text. Otherwise the default is Italian.
     static func generate(prompt: String) -> AIRequest {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased().hasPrefix("en ") || trimmed.lowercased() == "en" {
-            let cleaned = String(trimmed.dropFirst(min(3, trimmed.count)))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return AIRequest(system: generateEN, user: cleaned)
+        if let spaceIdx = trimmed.firstIndex(of: " ") {
+            let head = trimmed[..<spaceIdx].lowercased()
+            if let language = languageNames[head] {
+                let rest = String(trimmed[trimmed.index(after: spaceIdx)...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rest.isEmpty {
+                    return AIRequest(system: generateSystemFor(language: language), user: rest)
+                }
+            }
         }
         return AIRequest(system: generateIT, user: trimmed)
     }

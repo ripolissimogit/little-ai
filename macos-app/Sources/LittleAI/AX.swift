@@ -51,19 +51,41 @@ enum AX {
         )
     }
 
-    /// Returns true when the focused element accepts value mutation (editable text).
-    /// Static text, PDF selections, received email bodies etc. return false.
-    /// On Electron/WebArea the AX role is AXWebArea and the settable flag is often
-    /// unreliable — we default to editable (optimistic) because most focused selections
-    /// in browsers/Electron apps are in editable fields.
+    /// Returns true when the focused element accepts value mutation.
+    /// Priority: AXValue settable flag (most reliable) → insertion-point heuristic →
+    /// known-editable roles. Everything else defaults to readonly so the UI adapts
+    /// correctly to web articles, PDFs, static text, landmark containers etc.
     private static func isEditable(_ el: AXUIElement) -> Bool {
         let role = attrString(el, kAXRoleAttribute) ?? ""
         if role == "AXStaticText" { return false }
-        if role == "AXWebArea" { return true } // optimistic — sniff/paste will tell
+
+        // Primary signal: can the AXValue attribute be written?
         var settable = DarwinBoolean(false)
-        let status = AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable)
-        if status != .success { return true } // attribute doesn't exist → optimistic
-        return settable.boolValue
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success {
+            Log.debug("isEditable role=\(role) AXValue settable=\(settable.boolValue)", tag: "ax")
+            return settable.boolValue
+        }
+
+        // Secondary: insertion point attribute exists only on editable text fields.
+        var insertionValue: AnyObject?
+        let hasInsertion = AXUIElementCopyAttributeValue(
+            el,
+            kAXInsertionPointLineNumberAttribute as CFString,
+            &insertionValue
+        ) == .success
+        if hasInsertion {
+            Log.debug("isEditable role=\(role) has insertion point → editable", tag: "ax")
+            return true
+        }
+
+        // Tertiary: roles that are unambiguously editable on macOS.
+        if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" {
+            return true
+        }
+
+        // Default: conservative → readonly. Articles, landmarks, PDFs, static content.
+        Log.debug("isEditable role=\(role) → readonly (fallback)", tag: "ax")
+        return false
     }
 
     static func write(_ text: String, to target: Target) {

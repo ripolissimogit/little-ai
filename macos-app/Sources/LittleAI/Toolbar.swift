@@ -179,19 +179,9 @@ final class Toolbar {
             }
             return event
         }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            // Global monitor only fires when the click was NOT delivered to our app. But
-            // if the panel frame still contains the click location, the click landed on the
-            // panel chrome/shadow area — ignore it so we don't race the SwiftUI button.
-            guard let self, let panel = self.panel else { return }
-            let loc = NSEvent.mouseLocation
-            if panel.frame.contains(loc) {
-                Log.debug("dismiss: global click INSIDE panel frame at \(loc) — ignoring", tag: "ui")
-                return
-            }
-            Log.info("dismiss: global click outside panel at \(loc) type=\(event.type.rawValue)", tag: "ui")
-            self.hide()
-        }
+        // No global click-dismiss: the panel is a persistent workspace, not a popover.
+        // The user closes it explicitly via Esc, the Annulla button, or by completing an
+        // action. This lets them click away to fix the focused field without losing work.
     }
 
     private func removeDismissMonitors() {

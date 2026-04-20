@@ -52,6 +52,19 @@ final class App: NSObject, NSApplicationDelegate {
         ocrToggle.state = Prefs.useOCRContext ? .on : .off
         menu.addItem(ocrToggle)
         menu.addItem(.separator())
+
+        let providerItem = NSMenuItem(title: "Provider", action: nil, keyEquivalent: "")
+        let providerMenu = NSMenu()
+        for p in [Provider.anthropic, Provider.openai] {
+            let mi = NSMenuItem(title: p.label, action: #selector(selectProvider(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = p.rawValue
+            mi.state = (Prefs.provider == p) ? .on : .off
+            providerMenu.addItem(mi)
+        }
+        providerItem.submenu = providerMenu
+        menu.addItem(providerItem)
+        menu.addItem(.separator())
         let openLog = NSMenuItem(title: "Apri log", action: #selector(openLog(_:)), keyEquivalent: "l")
         openLog.target = self
         menu.addItem(openLog)
@@ -88,6 +101,18 @@ final class App: NSObject, NSApplicationDelegate {
         Log.info("useOCRContext toggled -> \(Prefs.useOCRContext)", tag: "app")
         if Prefs.useOCRContext && !OCR.isPermissionGranted() {
             OCR.requestPermission()
+        }
+    }
+
+    @objc private func selectProvider(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let p = Provider(rawValue: raw) else { return }
+        Prefs.provider = p
+        Log.info("provider switched -> \(p.rawValue)", tag: "app")
+        // Update check marks on sibling items.
+        if let parent = sender.menu {
+            for item in parent.items {
+                item.state = (item.representedObject as? String == raw) ? .on : .off
+            }
         }
     }
 
@@ -172,10 +197,16 @@ final class App: NSObject, NSApplicationDelegate {
             return
         }
         inFlight = true
+        let provider = Prefs.provider
+        Log.info("complete via provider=\(provider.rawValue)", tag: "app")
         Task { @MainActor in
             defer { inFlight = false }
             do {
-                let result = try await Anthropic.complete(req)
+                let result: String
+                switch provider {
+                case .anthropic: result = try await Anthropic.complete(req)
+                case .openai:    result = try await OpenAI.complete(req)
+                }
                 if Prefs.skipPreview {
                     Log.info("complete ok (skipPreview) → applying directly mode=\(mode)", tag: "app")
                     apply(result, mode: mode)
@@ -192,14 +223,17 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func apply(_ text: String, mode: ApplyMode) {
         Log.info("apply mode=\(mode) textLen=\(text.count)", tag: "app")
+        // Capture target before hide(): toolbar.hide() triggers onDismiss which clears
+        // self.target, so any read after hide() would see nil.
+        let captured = target
         toolbar.hide()
         switch mode {
         case .replace, .insert:
-            guard let t = target else {
+            guard let captured else {
                 Log.error("apply ignored — no target", tag: "app")
                 return
             }
-            AX.write(text, to: t)
+            AX.write(text, to: captured)
         case .copy:
             let pb = NSPasteboard.general
             pb.clearContents()
@@ -238,6 +272,18 @@ extension App {
     }
 }
 
+enum Provider: String {
+    case anthropic
+    case openai
+
+    var label: String {
+        switch self {
+        case .anthropic: return "Anthropic Claude"
+        case .openai: return "OpenAI GPT-4o"
+        }
+    }
+}
+
 enum Prefs {
     static var skipPreview: Bool {
         get { UserDefaults.standard.bool(forKey: "skipPreview") }
@@ -252,5 +298,13 @@ enum Prefs {
             return UserDefaults.standard.bool(forKey: "useOCRContext")
         }
         set { UserDefaults.standard.set(newValue, forKey: "useOCRContext") }
+    }
+
+    static var provider: Provider {
+        get {
+            let raw = UserDefaults.standard.string(forKey: "provider") ?? Provider.anthropic.rawValue
+            return Provider(rawValue: raw) ?? .anthropic
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "provider") }
     }
 }
