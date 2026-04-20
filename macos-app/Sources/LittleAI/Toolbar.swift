@@ -70,6 +70,8 @@ final class Toolbar {
         visualEffect.layer?.cornerRadius = 14
         visualEffect.layer?.cornerCurve = .continuous
         visualEffect.layer?.masksToBounds = true
+        visualEffect.layer?.borderWidth = 0.5
+        visualEffect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.25).cgColor
         hc.view.translatesAutoresizingMaskIntoConstraints = false
         hc.view.wantsLayer = true
         hc.view.layer?.backgroundColor = .clear
@@ -301,14 +303,11 @@ struct RootView: View {
     @ObservedObject var vm: ViewModel
 
     var body: some View {
-        // Background/blur/corners are provided by the NSVisualEffectView panel root.
-        // This view only renders the content with padding and a subtle inner border.
+        // Background/blur/corners/border are all provided by the NSVisualEffectView
+        // panel root — no SwiftUI border overlay here, otherwise the stroke ends up
+        // inset by the padding and produces a visible double edge.
         content
             .padding(16)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-            )
     }
 
     @ViewBuilder
@@ -337,6 +336,7 @@ private struct ActionBar: View {
             Item(symbol: "arrow.up.left.and.arrow.down.right", label: "Estendi") { vm.onAction?(.extend, nil) }
             Item(symbol: "arrow.down.right.and.arrow.up.left", label: "Riduci") { vm.onAction?(.reduce, nil) }
             Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil) }
+            Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil) }
             Menu {
                 ForEach(Tone.allCases) { t in
                     Button(t.label) { vm.onAction?(.tone, t) }

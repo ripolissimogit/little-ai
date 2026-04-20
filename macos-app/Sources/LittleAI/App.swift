@@ -188,7 +188,14 @@ final class App: NSObject, NSApplicationDelegate {
                 }
             }
             guard let self else { return }
-            let mode: ApplyMode = t.isEditable ? .replace : .copy
+            // Explain always yields copy-only — replacing the selection with an explanation
+            // of itself would be nonsense. Everything else respects editable-vs-readonly.
+            let mode: ApplyMode
+            if action == .explain {
+                mode = .copy
+            } else {
+                mode = t.isEditable ? .replace : .copy
+            }
             self.complete(Prompt.edit(action: action, tone: tone, selection: t.selection, context: self.context), mode: mode)
         }
     }

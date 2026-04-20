@@ -26,7 +26,7 @@ IDENTITY="Developer ID Application: Claudio Ripoli (6T98N5PN3Y)"
 BUNDLE_ID="ai.little.LittleAI"
 APP_NAME="LittleAI"
 DISPLAY_NAME="Little AI"
-VERSION="0.6"
+VERSION="0.7"
 BUILD_NUM="1"
 NOTARY_PROFILE="littleai-notary"
 
