@@ -44,6 +44,8 @@ private struct SettingsView: View {
             TabView {
                 providerTab
                     .tabItem { Label("Provider AI", systemImage: "brain") }
+                PresetTab()
+                    .tabItem { Label("Preset", systemImage: "person.crop.rectangle.stack") }
                 appearanceTab
                     .tabItem { Label("Aspetto", systemImage: "paintbrush") }
                 axiomTab
@@ -142,6 +144,161 @@ private struct SettingsView: View {
         withAnimation { saved = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             withAnimation { saved = false }
+        }
+    }
+}
+
+/// Settings tab for managing the user's preset library. Lists all stored presets,
+/// lets the user select the active one, edit name / addendum / glossary, add new
+/// presets, and delete custom ones. Each change writes back to Prefs immediately and
+/// asks the AppDelegate to rebuild the menu bar submenu so the change is visible
+/// everywhere without a relaunch.
+private struct PresetTab: View {
+    @State private var presets: [Preset] = Prefs.presets
+    @State private var selectedID: String = Prefs.activePresetID
+    @State private var editID: String = Prefs.activePresetID
+
+    private var editIndex: Int? {
+        presets.firstIndex(where: { $0.id == editID })
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Preset")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                List(selection: $editID) {
+                    ForEach(presets) { p in
+                        HStack {
+                            if p.id == selectedID {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                                    .frame(width: 14)
+                            } else {
+                                Spacer().frame(width: 14)
+                            }
+                            Text(p.name)
+                        }
+                        .tag(p.id)
+                    }
+                }
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
+                .frame(width: 180)
+
+                HStack(spacing: 6) {
+                    Button { addPreset() } label: { Image(systemName: "plus") }
+                    Button { deletePreset() } label: { Image(systemName: "minus") }
+                        .disabled(presets.count <= 1)
+                    Spacer()
+                    Button("Imposta attivo") { activate() }
+                        .disabled(editIndex == nil || presets[editIndex!].id == selectedID)
+                }
+                .controlSize(.small)
+            }
+
+            Divider()
+
+            if let idx = editIndex {
+                editor(for: idx)
+            } else {
+                Spacer()
+                Text("Seleziona un preset dalla lista").foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding(20)
+    }
+
+    @ViewBuilder
+    private func editor(for idx: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Nome")
+                    .font(.system(size: 12, weight: .medium))
+                TextField("Nome preset", text: Binding(
+                    get: { presets[idx].name },
+                    set: { presets[idx].name = $0; persist() }
+                ))
+                .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Contesto / istruzioni di sistema")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Appeso al system prompt di ogni azione (Edit, Generate, Promptify…) sotto la sezione \"Contesto utente\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: Binding(
+                    get: { presets[idx].systemAddendum },
+                    set: { presets[idx].systemAddendum = $0; persist() }
+                ))
+                .font(.system(size: 12))
+                .frame(minHeight: 80)
+                .border(Color.secondary.opacity(0.25))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Glossario / preferenze stilistiche")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Termini canonici, abbreviazioni preferite, regole di stile. Una riga per voce.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: Binding(
+                    get: { presets[idx].glossary },
+                    set: { presets[idx].glossary = $0; persist() }
+                ))
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 100)
+                .border(Color.secondary.opacity(0.25))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func persist() {
+        Prefs.presets = presets
+        notifyMenuRebuild()
+    }
+
+    private func activate() {
+        guard let idx = editIndex else { return }
+        let id = presets[idx].id
+        Prefs.activePresetID = id
+        selectedID = id
+        notifyMenuRebuild()
+    }
+
+    private func addPreset() {
+        let new = Preset(
+            id: UUID().uuidString,
+            name: "Nuovo preset",
+            systemAddendum: "",
+            glossary: ""
+        )
+        presets.append(new)
+        editID = new.id
+        persist()
+    }
+
+    private func deletePreset() {
+        guard let idx = editIndex, presets.count > 1 else { return }
+        let removedID = presets[idx].id
+        presets.remove(at: idx)
+        // If we deleted the active one, fall back to the first preset.
+        if selectedID == removedID {
+            selectedID = presets.first?.id ?? ""
+            Prefs.activePresetID = selectedID
+        }
+        editID = presets.first?.id ?? ""
+        persist()
+    }
+
+    private func notifyMenuRebuild() {
+        // The AppDelegate is the NSApplication delegate; cast back to App and ask it
+        // to refresh the menu bar submenu. Avoids a global notification roundtrip.
+        if let app = NSApp.delegate as? App {
+            app.rebuildPresetMenu()
         }
     }
 }

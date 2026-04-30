@@ -68,6 +68,11 @@ final class App: NSObject, NSApplicationDelegate {
         }
         providerItem.submenu = providerMenu
         menu.addItem(providerItem)
+
+        let presetItem = NSMenuItem(title: "Preset", action: nil, keyEquivalent: "")
+        presetItem.submenu = buildPresetMenu()
+        menu.addItem(presetItem)
+
         menu.addItem(.separator())
         let openLog = NSMenuItem(title: "Apri log", action: #selector(openLog(_:)), keyEquivalent: "l")
         openLog.target = self
@@ -116,6 +121,50 @@ final class App: NSObject, NSApplicationDelegate {
         Log.info("useOCRContext toggled -> \(Prefs.useOCRContext)", tag: "app")
         if Prefs.useOCRContext && !OCR.isPermissionGranted() {
             OCR.requestPermission()
+        }
+    }
+
+    /// Builds the Preset submenu freshly each call so it reflects the current preset
+    /// list and active selection — Settings can add, edit or delete presets, and the
+    /// menu must catch up. Called from applicationDidFinishLaunching and after each
+    /// preset change.
+    private func buildPresetMenu() -> NSMenu {
+        let m = NSMenu()
+        for p in Prefs.presets {
+            let mi = NSMenuItem(title: p.name, action: #selector(selectPreset(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = p.id
+            mi.state = (Prefs.activePresetID == p.id) ? .on : .off
+            m.addItem(mi)
+        }
+        m.addItem(.separator())
+        let editItem = NSMenuItem(title: "Modifica preset…", action: #selector(openSettings(_:)), keyEquivalent: "")
+        editItem.target = self
+        m.addItem(editItem)
+        return m
+    }
+
+    @objc private func selectPreset(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        Prefs.activePresetID = id
+        Log.info("preset switched -> \(id)", tag: "app")
+        if let parent = sender.menu {
+            for item in parent.items {
+                item.state = (item.representedObject as? String == id) ? .on : .off
+            }
+        }
+    }
+
+    /// Public hook for SettingsView: after the user edits the preset list it calls
+    /// this so the menu bar picks up the changes without a relaunch.
+    @MainActor
+    func rebuildPresetMenu() {
+        guard let menu = statusItem?.menu else { return }
+        for item in menu.items {
+            if item.title == "Preset" {
+                item.submenu = buildPresetMenu()
+                return
+            }
         }
     }
 
@@ -261,14 +310,15 @@ final class App: NSObject, NSApplicationDelegate {
         }
         inFlight = true
         let provider = Prefs.provider
-        Log.info("complete via provider=\(provider.rawValue)", tag: "app")
+        let augmented = Self.augmentWithPreset(req)
+        Log.info("complete via provider=\(provider.rawValue) preset=\(Prefs.activePreset?.name ?? "-")", tag: "app")
         Task { @MainActor in
             defer { inFlight = false }
             do {
                 let result: String
                 switch provider {
-                case .anthropic: result = try await Anthropic.complete(req)
-                case .openai:    result = try await OpenAI.complete(req)
+                case .anthropic: result = try await Anthropic.complete(augmented)
+                case .openai:    result = try await OpenAI.complete(augmented)
                 }
                 if Prefs.skipPreview {
                     Log.info("complete ok (skipPreview) → applying directly mode=\(mode)", tag: "app")
@@ -308,6 +358,28 @@ final class App: NSObject, NSApplicationDelegate {
 }
 
 extension App {
+    /// Splice the active preset's contextual addendum and glossary into the system
+    /// prompt. Called once per request so every action (Edit, Generate, Promptify,
+    /// PromptFromImage, …) inherits the same domain context. The original `system`
+    /// stays at the top of the prompt — preset content is appended in clearly labelled
+    /// sections so the model knows what's task instruction vs. user-supplied context.
+    static func augmentWithPreset(_ req: AIRequest) -> AIRequest {
+        guard let preset = Prefs.activePreset,
+              !preset.systemAddendum.isEmpty || !preset.glossary.isEmpty else {
+            return req
+        }
+        var addendum = ""
+        let trimmedAddendum = preset.systemAddendum.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGlossary = preset.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAddendum.isEmpty {
+            addendum += "\n\n## Contesto utente (preset: \(preset.name))\n\(trimmedAddendum)"
+        }
+        if !trimmedGlossary.isEmpty {
+            addendum += "\n\n## Glossario / preferenze stilistiche\n\(trimmedGlossary)"
+        }
+        return AIRequest(system: req.system + addendum, user: req.user, images: req.images)
+    }
+
     static func buildMainMenu() -> NSMenu {
         let main = NSMenu()
 
@@ -382,5 +454,43 @@ enum Prefs {
             return min(max(UserDefaults.standard.double(forKey: "idleOpacity"), 0.1), 1.0)
         }
         set { UserDefaults.standard.set(min(max(newValue, 0.1), 1.0), forKey: "idleOpacity") }
+    }
+
+    /// User's preset library. Persisted as JSON in UserDefaults. Falls back to the
+    /// factory list on first run or if the stored data fails to decode (forward
+    /// compatibility: older builds or hand-edited defaults shouldn't crash the app).
+    static var presets: [Preset] {
+        get {
+            if let data = UserDefaults.standard.data(forKey: "presets"),
+               let decoded = try? JSONDecoder().decode([Preset].self, from: data),
+               !decoded.isEmpty {
+                return decoded
+            }
+            return Preset.factory
+        }
+        set {
+            // Empty list is meaningless — keep at least the factory list available so
+            // the menu bar / settings UI never ends up with no rows to select.
+            let toStore = newValue.isEmpty ? Preset.factory : newValue
+            if let data = try? JSONEncoder().encode(toStore) {
+                UserDefaults.standard.set(data, forKey: "presets")
+            }
+        }
+    }
+
+    /// Identifier of the currently active preset. Default = "generale" (the empty,
+    /// no-op preset). If the stored ID points at a deleted preset we fall back to the
+    /// first available one, never to nil — the menu/settings always show a checkmark.
+    static var activePresetID: String {
+        get {
+            let stored = UserDefaults.standard.string(forKey: "activePresetID") ?? "generale"
+            return presets.contains(where: { $0.id == stored }) ? stored : (presets.first?.id ?? "generale")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "activePresetID") }
+    }
+
+    static var activePreset: Preset? {
+        let id = activePresetID
+        return presets.first { $0.id == id }
     }
 }
