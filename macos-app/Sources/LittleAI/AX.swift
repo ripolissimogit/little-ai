@@ -172,39 +172,39 @@ enum AX {
         )
     }
 
-    /// Returns true when the focused element accepts value mutation.
-    /// Priority: AXValue settable flag (most reliable) → insertion-point heuristic →
-    /// known-editable roles. Everything else defaults to readonly so the UI adapts
-    /// correctly to web articles, PDFs, static text, landmark containers etc.
+    /// Returns true when the focused element accepts value mutation. Order matters:
+    /// `AXValue settable` is checked LAST because rich-text apps (Word, Pages, Notes,
+    /// many WebArea hosts, …) compose their document from sub-elements and report
+    /// settable=false on the focused element even though the caret is alive and paste
+    /// works. We trust insertion-point presence and known-editable roles first.
     private static func isEditable(_ el: AXUIElement) -> Bool {
         let role = attrString(el, kAXRoleAttribute) ?? ""
         if role == "AXStaticText" { return false }
 
-        // Primary signal: can the AXValue attribute be written?
-        var settable = DarwinBoolean(false)
-        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success {
-            Log.debug("isEditable role=\(role) AXValue settable=\(settable.boolValue)", tag: "ax")
-            return settable.boolValue
-        }
-
-        // Secondary: insertion point attribute exists only on editable text fields.
+        // 1. Insertion point: only present on elements that host a typing caret. Strong
+        //    positive signal across AppKit, WebKit, Word, Pages, Notes, IDE editors.
         var insertionValue: AnyObject?
-        let hasInsertion = AXUIElementCopyAttributeValue(
-            el,
-            kAXInsertionPointLineNumberAttribute as CFString,
-            &insertionValue
-        ) == .success
-        if hasInsertion {
+        if AXUIElementCopyAttributeValue(el, kAXInsertionPointLineNumberAttribute as CFString, &insertionValue) == .success {
             Log.debug("isEditable role=\(role) has insertion point → editable", tag: "ax")
             return true
         }
 
-        // Tertiary: roles that are unambiguously editable on macOS.
+        // 2. Roles that are unambiguously editable on macOS.
         if role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" {
+            Log.debug("isEditable role=\(role) → editable (role)", tag: "ax")
             return true
         }
 
-        // Default: conservative → readonly. Articles, landmarks, PDFs, static content.
+        // 3. Last resort: AXValue settable flag. Only honoured for elements that don't
+        //    match the stronger signals above, since plenty of editable surfaces (Word
+        //    document body, Pages, Notes rich text) report it as false.
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success,
+           settable.boolValue {
+            Log.debug("isEditable role=\(role) AXValue settable=true → editable", tag: "ax")
+            return true
+        }
+
         Log.debug("isEditable role=\(role) → readonly (fallback)", tag: "ax")
         return false
     }
