@@ -158,7 +158,7 @@ enum AX {
         }
 
         let rect = selectionRect(element)
-        let editable = isEditable(element)
+        let editable = isEditable(element, hasSelection: !selected.isEmpty)
         Log.info("captureFocused done source=\(source) selLen=\(selected.count) editable=\(editable) rect=\(rect.map { "\($0)" } ?? "nil") app=\(app?.localizedName ?? "?")", tag: "ax")
 
         lastSeenChangeCount = NSPasteboard.general.changeCount
@@ -172,17 +172,19 @@ enum AX {
         )
     }
 
-    /// Returns true when the focused element accepts value mutation. Order matters:
-    /// `AXValue settable` is checked LAST because rich-text apps (Word, Pages, Notes,
-    /// many WebArea hosts, …) compose their document from sub-elements and report
-    /// settable=false on the focused element even though the caret is alive and paste
-    /// works. We trust insertion-point presence and known-editable roles first.
-    private static func isEditable(_ el: AXUIElement) -> Bool {
+    /// Returns true when the focused element accepts value mutation. Strong signals
+    /// first (insertion point, editable role, settable AXValue), then a selection-based
+    /// heuristic for container-style hosts: Word exposes the focused element as an
+    /// `AXSplitGroup`, Pages as `AXGroup`, Notes/Outlook as `AXScrollArea`, and most
+    /// IDEs and Electron apps wrap their editor in a webview. None of these answer the
+    /// strong checks, but if Copy succeeded against them (selection captured) we can
+    /// safely assume Paste will land too — the same surface that honoured ⌘C honours ⌘V.
+    private static func isEditable(_ el: AXUIElement, hasSelection: Bool) -> Bool {
         let role = attrString(el, kAXRoleAttribute) ?? ""
         if role == "AXStaticText" { return false }
 
         // 1. Insertion point: only present on elements that host a typing caret. Strong
-        //    positive signal across AppKit, WebKit, Word, Pages, Notes, IDE editors.
+        //    positive across AppKit, WebKit, IDE editors that expose the caret element.
         var insertionValue: AnyObject?
         if AXUIElementCopyAttributeValue(el, kAXInsertionPointLineNumberAttribute as CFString, &insertionValue) == .success {
             Log.debug("isEditable role=\(role) has insertion point → editable", tag: "ax")
@@ -195,13 +197,21 @@ enum AX {
             return true
         }
 
-        // 3. Last resort: AXValue settable flag. Only honoured for elements that don't
-        //    match the stronger signals above, since plenty of editable surfaces (Word
-        //    document body, Pages, Notes rich text) report it as false.
+        // 3. AXValue settable flag.
         var settable = DarwinBoolean(false)
         if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success,
            settable.boolValue {
             Log.debug("isEditable role=\(role) AXValue settable=true → editable", tag: "ax")
+            return true
+        }
+
+        // 4. Selection-presence heuristic for container-style focus elements
+        //    (AXSplitGroup, AXScrollArea, AXGroup, AXWebArea, AXLayoutArea …). Word /
+        //    Pages / Notes / IDE editors all park focus on a host node whose AX info
+        //    looks readonly, but if the menu-copy / ⌘C path returned text, the surface
+        //    is responsive to clipboard commands and Paste should land.
+        if hasSelection {
+            Log.debug("isEditable role=\(role) → editable (selection captured implies paste-capable)", tag: "ax")
             return true
         }
 
