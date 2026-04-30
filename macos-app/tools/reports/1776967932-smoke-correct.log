@@ -1,0 +1,27 @@
+2026-04-23 20:12:07.667 INFO  [app] === LittleAI boot v0.3 pid=67055 ===
+2026-04-23 20:12:07.668 INFO  [app] log file: /Users/claudioripoli/Library/Logs/LittleAI/littleai.log
+2026-04-23 20:12:07.672 INFO  [app] axiom sink disabled (no token in Keychain)
+2026-04-23 20:12:07.674 INFO  [app] accessibility trusted=true
+2026-04-23 20:12:07.689 INFO  [hk] hotkey start installing CGEventTap
+2026-04-23 20:12:07.689 INFO  [hk] hotkey ready (listening for double-shift, window=0.4s)
+2026-04-23 20:12:11.980 DEBUG [hk] double-shift detected (Δ=798660731.980s)
+2026-04-23 20:12:11.981 INFO  [app] trigger (double-shift) toolbarVisible=false inFlight=false
+2026-04-23 20:12:11.981 INFO  [ax] captureFocused start trusted=true frontmost=TextEdit(67056)
+2026-04-23 20:12:12.003 DEBUG [ax] attr AXSubrole status=-25205
+2026-04-23 20:12:12.004 DEBUG [ax] attr AXTitle status=-25205
+2026-04-23 20:12:12.004 DEBUG [ax] focused element: role=AXTextArea subrole= title=
+2026-04-23 20:12:12.004 DEBUG [ax] app bundleID=com.apple.TextEdit isTerminal=false
+2026-04-23 20:12:12.004 DEBUG [ax] readWebKitSelection: no AXSelectedTextMarkerRange status=-25205
+2026-04-23 20:12:12.016 DEBUG [ax] sniffViaMenuCopy: AXPress status=0
+2026-04-23 20:12:12.332 INFO  [ax] sniffViaMenuCopy polls=15 changed=true len=0
+2026-04-23 20:12:12.332 WARN  [ax] all AX/menu paths empty, trying ⌘C sniff
+2026-04-23 20:12:12.332 DEBUG [ax] sniff: pre changeCount=300 snapshot=1
+2026-04-23 20:12:12.600 INFO  [ax] sniff done polls=12 changed=true len=0
+2026-04-23 20:12:12.602 DEBUG [ax] selectionRect from AXBoundsForRange=(186.0, 189.0, 0.0, 14.0)
+2026-04-23 20:12:12.603 DEBUG [ax] isEditable role=AXTextArea AXValue settable=true
+2026-04-23 20:12:12.603 INFO  [ax] captureFocused done source=none selLen=0 editable=true rect=(186.0, 189.0, 0.0, 14.0) app=TextEdit
+2026-04-23 20:12:12.604 INFO  [ui] toolbar show selLen=0 rect=(186.0, 189.0, 0.0, 14.0)
+2026-04-23 20:12:12.662 DEBUG [ui] relayout size=(560.0, 59.0) origin=(569.27734375, 480.18359375) isKey=false
+2026-04-23 20:12:12.676 INFO  [ui] toolbar shown isKey=false isVisible=true
+2026-04-23 20:12:12.676 DEBUG [app] trigger: toolbar shown selLen=0
+2026-04-23 20:12:12.717 DEBUG [ui] panel didBecomeKey

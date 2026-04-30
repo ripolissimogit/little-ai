@@ -11,6 +11,11 @@ let package = Package(
         .executableTarget(
             name: "LittleAI",
             path: "Sources/LittleAI"
-        )
+        ),
+        .testTarget(
+            name: "LittleAITests",
+            dependencies: ["LittleAI"],
+            path: "Tests/LittleAITests"
+        ),
     ]
 )

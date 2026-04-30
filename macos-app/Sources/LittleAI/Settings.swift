@@ -36,6 +36,7 @@ private struct SettingsView: View {
     @State private var openai = Keychain.openAIKey ?? ""
     @State private var axiomToken = Keychain.axiomToken ?? ""
     @State private var axiomDataset = Keychain.axiomDataset ?? ""
+    @State private var idleOpacity: Double = Prefs.idleOpacity
     @State private var saved = false
 
     var body: some View {
@@ -43,6 +44,8 @@ private struct SettingsView: View {
             TabView {
                 providerTab
                     .tabItem { Label("Provider AI", systemImage: "brain") }
+                appearanceTab
+                    .tabItem { Label("Aspetto", systemImage: "paintbrush") }
                 axiomTab
                     .tabItem { Label("Logging", systemImage: "list.bullet.rectangle") }
             }
@@ -70,6 +73,36 @@ private struct SettingsView: View {
             Text("Serve almeno una delle due. Il provider attivo si sceglie dal menu bar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+    }
+
+    private var appearanceTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Trasparenza quando inattiva")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Text("\(Int(idleOpacity * 100))%")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $idleOpacity, in: 0.1...1.0, step: 0.05) {
+                    Text("Trasparenza")
+                } minimumValueLabel: {
+                    Text("10%").font(.caption2).foregroundStyle(.secondary)
+                } maximumValueLabel: {
+                    Text("100%").font(.caption2).foregroundStyle(.secondary)
+                }
+                .onChange(of: idleOpacity) { _, newValue in
+                    Prefs.idleOpacity = newValue
+                }
+                Text("Quando la barra non è la finestra attiva (es. mentre lavori nell'app sottostante) viene attenuata a questa opacità. La modifica si applica al prossimo cambio di focus.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
         }
         .padding(20)

@@ -5,8 +5,10 @@ import SwiftUI
 /// dismissed on Escape or any click outside.
 @MainActor
 final class Toolbar {
-    var onEdit: ((Action, Tone?) -> Void)?
+    var onEdit: ((Action, Tone?, PromptTarget?) -> Void)?
     var onGenerate: ((String) -> Void)?
+    var onPromptifyCompose: ((String, PromptTarget) -> Void)?
+    var onPromptFromImage: (() -> Void)?
     var onAccept: ((String, ApplyMode) -> Void)?
     var onDismiss: (() -> Void)?
 
@@ -35,13 +37,21 @@ final class Toolbar {
         self.target = target
         vm.reset(selection: target.selection, isEditable: target.isEditable)
         Log.info("toolbar show selLen=\(target.selection.count) rect=\(target.selectionRect.map { "\($0)" } ?? "nil")", tag: "ui")
-        vm.onAction = { [weak self] a, t in
-            Log.info("vm.onAction action=\(a.rawValue) tone=\(t?.rawValue ?? "-")", tag: "ui")
-            self?.onEdit?(a, t)
+        vm.onAction = { [weak self] a, t, pt in
+            Log.info("vm.onAction action=\(a.rawValue) tone=\(t?.rawValue ?? "-") target=\(pt?.rawValue ?? "-")", tag: "ui")
+            self?.onEdit?(a, t, pt)
         }
         vm.onGenerate = { [weak self] p in
             Log.info("vm.onGenerate promptLen=\(p.count)", tag: "ui")
             self?.onGenerate?(p)
+        }
+        vm.onPromptifyCompose = { [weak self] p, t in
+            Log.info("vm.onPromptifyCompose promptLen=\(p.count) target=\(t.rawValue)", tag: "ui")
+            self?.onPromptifyCompose?(p, t)
+        }
+        vm.onPromptFromImage = { [weak self] in
+            Log.info("vm.onPromptFromImage", tag: "ui")
+            self?.onPromptFromImage?()
         }
         vm.onAccept = { [weak self] text, mode in
             Log.info("vm.onAccept mode=\(mode) len=\(text.count)", tag: "ui")
@@ -99,6 +109,18 @@ final class Toolbar {
         p.hidesOnDeactivate = false
         p.delegate = panelDelegate
         panel = p
+
+        // Idle transparency: when the panel loses key status (user clicks back into the
+        // source app, or the panel was just placed bottom-center in free mode and isn't
+        // the focus), fade it down to the user-configured opacity. Restore full opacity
+        // when the panel regains focus. The closures read Prefs each time so changes in
+        // Settings take effect on the next focus transition without restarting.
+        panelDelegate.onBecomeKey = { [weak self] in
+            self?.panel?.alphaValue = 1.0
+        }
+        panelDelegate.onResignKey = { [weak self] in
+            self?.panel?.alphaValue = CGFloat(Prefs.idleOpacity)
+        }
 
         relayout()
         // Accessory apps can't receive key status for their panels — switch to .regular for
@@ -217,14 +239,29 @@ final class Toolbar {
         Log.debug("relayout size=\(size) origin=\(finalFrame.origin) isKey=\(panel.isKeyWindow)", tag: "ui")
     }
 
-    /// Positions the panel to the right of the mouse cursor, vertically centered on it.
-    /// Using the cursor is more reliable than AX selection bounds: Electron/WebArea apps
-    /// (VSCode, Slack, Chrome, Claude Desktop) return the entire text-area frame for
-    /// `AXBoundsForRange`, which would push the panel to the top of the screen.
+    /// Positions the panel. Two regimes:
+    ///   - "Free" mode (no selection captured → Generate / Promptify / image prompt): pin
+    ///     to the bottom-center of the screen the cursor is on. The panel has no anchor
+    ///     to follow, and floating it next to the cursor is invasive — it appears wherever
+    ///     the mouse happens to be when the user double-shifts.
+    ///   - "Anchored" mode (selection present → Edit / Explain): keep the historical
+    ///     behaviour and place it next to the cursor, since the panel is conceptually
+    ///     attached to the highlighted text. AX selection bounds aren't reliable on
+    ///     Electron/WebArea apps, so we use the mouse position as the anchor.
     private func origin(for target: Target, panelSize: NSSize) -> NSPoint {
         let cursor = target.fallbackCursor
         let screen = NSScreen.screens.first { $0.frame.contains(cursor) } ?? NSScreen.main ?? NSScreen.screens[0]
         let visible = screen.visibleFrame
+
+        if target.selection.isEmpty {
+            let x = visible.midX - panelSize.width / 2
+            let y = visible.minY + gap
+            return NSPoint(
+                x: max(visible.minX + gap, min(x, visible.maxX - panelSize.width - gap)),
+                y: y
+            )
+        }
+
         var o = NSPoint(x: cursor.x + cursorOffset, y: cursor.y - panelSize.height / 2)
         // If the panel would run off the right edge, put it to the left of the cursor.
         if o.x + panelSize.width > visible.maxX - gap {
@@ -248,12 +285,20 @@ final class KeyablePanel: NSPanel {
 @MainActor
 final class PanelDelegate: NSObject, NSWindowDelegate {
     var onWillClose: (() -> Void)?
+    var onBecomeKey: (() -> Void)?
+    var onResignKey: (() -> Void)?
 
     nonisolated func windowDidBecomeKey(_ n: Notification) {
-        Task { @MainActor in Log.debug("panel didBecomeKey", tag: "ui") }
+        Task { @MainActor in
+            Log.debug("panel didBecomeKey", tag: "ui")
+            self.onBecomeKey?()
+        }
     }
     nonisolated func windowDidResignKey(_ n: Notification) {
-        Task { @MainActor in Log.warn("panel didResignKey", tag: "ui") }
+        Task { @MainActor in
+            Log.warn("panel didResignKey", tag: "ui")
+            self.onResignKey?()
+        }
     }
     nonisolated func windowWillClose(_ n: Notification) {
         Task { @MainActor in
@@ -285,8 +330,10 @@ final class ViewModel: ObservableObject {
     @Published var composeText: String = ""
     @Published var isEditable: Bool = true
 
-    var onAction: ((Action, Tone?) -> Void)?
+    var onAction: ((Action, Tone?, PromptTarget?) -> Void)?
     var onGenerate: ((String) -> Void)?
+    var onPromptifyCompose: ((String, PromptTarget) -> Void)?
+    var onPromptFromImage: (() -> Void)?
     var onAccept: ((String, ApplyMode) -> Void)?
     var onCancel: (() -> Void)?
     var onContentSizeChange: (() -> Void)?
@@ -306,8 +353,20 @@ struct RootView: View {
         // Background/blur/corners/border are all provided by the NSVisualEffectView
         // panel root — no SwiftUI border overlay here, otherwise the stroke ends up
         // inset by the padding and produces a visible double edge.
-        content
-            .padding(16)
+        VStack(alignment: .leading, spacing: 10) {
+            content
+            if showsLegend {
+                ShortcutLegend(state: vm.state)
+            }
+        }
+        .padding(16)
+    }
+
+    private var showsLegend: Bool {
+        switch vm.state {
+        case .idle, .compose, .preview: return true
+        case .loading, .error: return false
+        }
     }
 
     @ViewBuilder
@@ -327,22 +386,82 @@ struct RootView: View {
     }
 }
 
+private struct ShortcutLegend: View {
+    let state: ViewModel.State
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(items, id: \.0) { keys, label in
+                HStack(spacing: 4) {
+                    Text(keys)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color.secondary.opacity(0.15))
+                        )
+                    Text(label)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 2)
+    }
+
+    private var items: [(String, String)] {
+        switch state {
+        case .compose:
+            return [("⇧⇧", "apri/chiudi"), ("↩", "invia"), ("esc", "chiudi")]
+        case .preview:
+            return [("↩", "conferma"), ("esc", "annulla")]
+        default:
+            return [("⇧⇧", "apri/chiudi"), ("esc", "chiudi")]
+        }
+    }
+}
+
 private struct ActionBar: View {
     @ObservedObject var vm: ViewModel
 
     var body: some View {
         HStack(spacing: 4) {
-            Item(symbol: "checkmark.seal", label: "Correggi") { vm.onAction?(.correct, nil) }
-            Item(symbol: "arrow.up.left.and.arrow.down.right", label: "Estendi") { vm.onAction?(.extend, nil) }
-            Item(symbol: "arrow.down.right.and.arrow.up.left", label: "Riduci") { vm.onAction?(.reduce, nil) }
-            Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil) }
-            Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil) }
+            Item(symbol: "checkmark.seal", label: "Correggi") { vm.onAction?(.correct, nil, nil) }
+            Item(symbol: "arrow.up.left.and.arrow.down.right", label: "Estendi") { vm.onAction?(.extend, nil, nil) }
+            Item(symbol: "arrow.down.right.and.arrow.up.left", label: "Riduci") { vm.onAction?(.reduce, nil, nil) }
+            Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil, nil) }
+            Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil, nil) }
             Menu {
                 ForEach(Tone.allCases) { t in
-                    Button(t.label) { vm.onAction?(.tone, t) }
+                    Button(t.label) { vm.onAction?(.tone, t, nil) }
                 }
             } label: {
                 Label("Tono", systemImage: "theatermasks")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Menu {
+                ForEach(PromptTarget.allCases) { target in
+                    Button {
+                        vm.onAction?(.promptify, nil, target)
+                    } label: {
+                        Label(target.label, systemImage: target.symbol)
+                    }
+                }
+                if Clipboard.hasImage {
+                    Divider()
+                    Button {
+                        vm.onPromptFromImage?()
+                    } label: {
+                        Label("Da immagine (clipboard)", systemImage: "photo.on.rectangle.angled")
+                    }
+                }
+            } label: {
+                Label("Prompt", systemImage: "wand.and.stars")
                     .labelStyle(.titleAndIcon)
                     .font(.system(size: 12, weight: .medium))
             }
@@ -358,8 +477,31 @@ private struct ReadonlyActionBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ActionBar.Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil) }
-            ActionBar.Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil) }
+            ActionBar.Item(symbol: "lightbulb", label: "Spiega") { vm.onAction?(.explain, nil, nil) }
+            ActionBar.Item(symbol: "globe", label: "Traduci") { vm.onAction?(.translate, nil, nil) }
+            Menu {
+                ForEach(PromptTarget.allCases) { target in
+                    Button {
+                        vm.onAction?(.promptify, nil, target)
+                    } label: {
+                        Label(target.label, systemImage: target.symbol)
+                    }
+                }
+                if Clipboard.hasImage {
+                    Divider()
+                    Button {
+                        vm.onPromptFromImage?()
+                    } label: {
+                        Label("Da immagine (clipboard)", systemImage: "photo.on.rectangle.angled")
+                    }
+                }
+            } label: {
+                Label("Prompt", systemImage: "wand.and.stars")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             Spacer(minLength: 0)
             Text("sola lettura")
                 .font(.system(size: 10))
@@ -391,6 +533,10 @@ private struct Compose: View {
     @ObservedObject var vm: ViewModel
     @FocusState private var focused: Bool
 
+    private var isEmpty: Bool {
+        vm.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "sparkles")
@@ -404,11 +550,43 @@ private struct Compose: View {
                     Log.debug("compose onChange len=\(newValue.count)", tag: "ui")
                     vm.onContentSizeChange?()
                 }
+            // Promptify dropdown: same menu surfaced in the selection-mode ActionBar,
+            // applied to the text currently typed in the compose field. The "Da immagine"
+            // entry appears only when the clipboard holds an image — and it's the only
+            // entry usable when the compose text is empty, so we keep the menu enabled
+            // in that case.
+            Menu {
+                ForEach(PromptTarget.allCases) { target in
+                    Button {
+                        promptify(target: target)
+                    } label: {
+                        Label(target.label, systemImage: target.symbol)
+                    }
+                    .disabled(isEmpty)
+                }
+                if Clipboard.hasImage {
+                    Divider()
+                    Button {
+                        vm.onPromptFromImage?()
+                    } label: {
+                        Label("Da immagine (clipboard)", systemImage: "photo.on.rectangle.angled")
+                    }
+                }
+            } label: {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 16))
+                    .foregroundStyle((isEmpty && !Clipboard.hasImage) ? .tertiary : .secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(isEmpty && !Clipboard.hasImage)
+            .help("Trasforma in prompt ottimizzato")
             Button(action: submit) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 20))
             }
             .buttonStyle(.plain)
-            .disabled(vm.composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(isEmpty)
             .keyboardShortcut(.defaultAction)
         }
         .padding(.vertical, 2)
@@ -418,6 +596,11 @@ private struct Compose: View {
     private func submit() {
         let text = vm.composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty { vm.onGenerate?(text) }
+    }
+
+    private func promptify(target: PromptTarget) {
+        let text = vm.composeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty { vm.onPromptifyCompose?(text, target) }
     }
 }
 

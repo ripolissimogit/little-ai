@@ -1,0 +1,58 @@
+{
+  "finishedAt" : "2026-04-23T18:12:12Z",
+  "logTailPath" : "\/Users\/claudioripoli\/little-ai\/macos-app\/tools\/reports\/1776967932-smoke-correct.log",
+  "overall" : false,
+  "scenario" : "smoke-correct",
+  "screenshotPath" : "\/Users\/claudioripoli\/little-ai\/macos-app\/tools\/reports\/1776967932-smoke-correct.png",
+  "startedAt" : "2026-04-23T18:12:07Z",
+  "steps" : [
+    {
+      "detail" : "AX granted",
+      "elapsedMs" : 0,
+      "name" : "trusted",
+      "ok" : true
+    },
+    {
+      "detail" : "pid=67055",
+      "elapsedMs" : 890,
+      "name" : "launch LittleAI",
+      "ok" : true
+    },
+    {
+      "detail" : "pid=67056",
+      "elapsedMs" : 2259,
+      "name" : "launch TextEdit",
+      "ok" : true
+    },
+    {
+      "detail" : "typed",
+      "elapsedMs" : 942,
+      "name" : "type sample text with typos",
+      "ok" : true
+    },
+    {
+      "detail" : "⌘A",
+      "elapsedMs" : 203,
+      "name" : "select all",
+      "ok" : true
+    },
+    {
+      "detail" : "double-shift emitted",
+      "elapsedMs" : 165,
+      "name" : "trigger hotkey (double-shift)",
+      "ok" : true
+    },
+    {
+      "detail" : "AXWindow[title= desc=]",
+      "elapsedMs" : 736,
+      "name" : "find LittleAI floating panel",
+      "ok" : true
+    },
+    {
+      "detail" : "elementNotFound(\"AXButton Correggi\")",
+      "elapsedMs" : 11,
+      "name" : "find Correggi button",
+      "ok" : false
+    }
+  ]
+}

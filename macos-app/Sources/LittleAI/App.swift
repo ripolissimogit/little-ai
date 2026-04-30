@@ -84,8 +84,10 @@ final class App: NSObject, NSApplicationDelegate {
         hotkey.onTrigger = { [weak self] in Task { @MainActor in self?.trigger() } }
         hotkey.start()
 
-        toolbar.onEdit = { [weak self] action, tone in self?.runEdit(action: action, tone: tone) }
+        toolbar.onEdit = { [weak self] action, tone, target in self?.runEdit(action: action, tone: tone, target: target) }
         toolbar.onGenerate = { [weak self] prompt in self?.runGenerate(prompt: prompt) }
+        toolbar.onPromptifyCompose = { [weak self] text, target in self?.runPromptifyCompose(text: text, target: target) }
+        toolbar.onPromptFromImage = { [weak self] in self?.runPromptFromImage() }
         toolbar.onAccept = { [weak self] text, mode in self?.apply(text, mode: mode) }
         toolbar.onDismiss = { [weak self] in
             self?.target = nil
@@ -168,12 +170,12 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func runEdit(action: Action, tone: Tone?) {
+    private func runEdit(action: Action, tone: Tone?, target promptTarget: PromptTarget?) {
         guard let t = target, !t.selection.isEmpty else {
             Log.warn("runEdit ignored — no target or empty selection", tag: "app")
             return
         }
-        Log.info("runEdit action=\(action.rawValue) tone=\(tone?.rawValue ?? "-") selLen=\(t.selection.count) ctxLen=\(context?.count ?? 0) editable=\(t.isEditable)", tag: "app")
+        Log.info("runEdit action=\(action.rawValue) tone=\(tone?.rawValue ?? "-") target=\(promptTarget?.rawValue ?? "-") selLen=\(t.selection.count) ctxLen=\(context?.count ?? 0) editable=\(t.isEditable)", tag: "app")
         toolbar.setLoading()
         // Wait up to ~500ms for the OCR context task to finish, if it's still running.
         Task { @MainActor [weak self] in
@@ -196,7 +198,7 @@ final class App: NSObject, NSApplicationDelegate {
             } else {
                 mode = t.isEditable ? .replace : .copy
             }
-            self.complete(Prompt.edit(action: action, tone: tone, selection: t.selection, context: self.context), mode: mode)
+            self.complete(Prompt.edit(action: action, tone: tone, target: promptTarget, selection: t.selection, context: self.context), mode: mode)
         }
     }
 
@@ -205,10 +207,51 @@ final class App: NSObject, NSApplicationDelegate {
             Log.warn("runGenerate ignored — no target", tag: "app")
             return
         }
-        Log.info("runGenerate promptLen=\(prompt.count)", tag: "app")
+        // The free-mode TextField doubles as a "describe this image" entry point: any
+        // absolute path to an image file inside the prompt is loaded from disk and shipped
+        // to the vision model. If the prompt is *only* paths, we substitute a default
+        // "describe" instruction so the model knows what to do.
+        let extracted = Clipboard.extractImagePaths(from: prompt)
+        let userText = extracted.cleaned.isEmpty && !extracted.images.isEmpty
+            ? "Descrivi questa immagine in dettaglio, in italiano."
+            : extracted.cleaned.isEmpty ? prompt : extracted.cleaned
+        Log.info("runGenerate promptLen=\(prompt.count) cleanedLen=\(userText.count) images=\(extracted.images.count)", tag: "app")
         toolbar.setLoading()
         let mode: ApplyMode = t.isEditable ? .insert : .copy
-        complete(Prompt.generate(prompt: prompt), mode: mode)
+        var req = Prompt.generate(prompt: userText)
+        if !extracted.images.isEmpty {
+            req = AIRequest(system: req.system, user: req.user, images: extracted.images)
+        }
+        complete(req, mode: mode)
+    }
+
+    private func runPromptifyCompose(text: String, target promptTarget: PromptTarget) {
+        guard let t = target else {
+            Log.warn("runPromptifyCompose ignored — no target", tag: "app")
+            return
+        }
+        Log.info("runPromptifyCompose textLen=\(text.count) target=\(promptTarget.rawValue)", tag: "app")
+        toolbar.setLoading()
+        let mode: ApplyMode = t.isEditable ? .insert : .copy
+        complete(Prompt.promptify(target: promptTarget, text: text), mode: mode)
+    }
+
+    private func runPromptFromImage() {
+        guard let t = target else {
+            Log.warn("runPromptFromImage ignored — no target", tag: "app")
+            return
+        }
+        guard let image = Clipboard.image() else {
+            Log.error("runPromptFromImage: no image in clipboard", tag: "app")
+            toolbar.setError("Nessuna immagine nella clipboard.")
+            return
+        }
+        Log.info("runPromptFromImage imageBytes=\(image.data.count) mediaType=\(image.mediaType)", tag: "app")
+        toolbar.setLoading()
+        let mode: ApplyMode = t.isEditable ? .insert : .copy
+        var req = Prompt.promptifyFromImage()
+        req = AIRequest(system: req.system, user: req.user, images: [image])
+        complete(req, mode: mode)
     }
 
     private func complete(_ req: AIRequest, mode: ApplyMode) {
@@ -326,5 +369,18 @@ enum Prefs {
             return Provider(rawValue: raw) ?? .anthropic
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "provider") }
+    }
+
+    /// Alpha applied to the toolbar panel when it loses key status (idle). 1.0 = fully
+    /// opaque, 0.1 = barely visible. Default 0.35 keeps the bottom-center "free" panel
+    /// readable but not invasive while the user works in the source app. Clamped on read
+    /// to stay inside [0.1, 1.0] so a corrupted UserDefaults can't make the panel
+    /// invisible.
+    static var idleOpacity: Double {
+        get {
+            if UserDefaults.standard.object(forKey: "idleOpacity") == nil { return 0.35 }
+            return min(max(UserDefaults.standard.double(forKey: "idleOpacity"), 0.1), 1.0)
+        }
+        set { UserDefaults.standard.set(min(max(newValue, 0.1), 1.0), forKey: "idleOpacity") }
     }
 }

@@ -1,0 +1,85 @@
+=== swift test @ Thu Apr 23 20:19:43 CEST 2026 ===
+[0/1] Planning build
+Building for debugging...
+[0/8] /Users/claudioripoli/little-ai/macos-app/.build/arm64-apple-macosx/debug/LittleAIPackageTests.derived/runner.swift
+[1/10] Write sources
+[4/10] Write swift-version--58304C5D6DBC2206.txt
+[6/17] Compiling LittleAI Clipboard.swift
+[7/17] Compiling LittleAI AX.swift
+/Users/claudioripoli/little-ai/macos-app/Sources/LittleAI/AX.swift:154:22: warning: 'activate' was deprecated in macOS 14.0 [#DeprecatedDeclaration]
+152 |         NSApp.deactivate()
+153 |         if let app = target.sourceApp {
+154 |             let ok = activate(app)
+    |                      `- warning: 'activate' was deprecated in macOS 14.0 [#DeprecatedDeclaration]
+155 |             Log.debug("activate(\(sourceName)) returned=\(ok)", tag: "ax")
+156 |         } else {
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[8/17] Emitting module LittleAI
+[9/17] Compiling LittleAI App.swift
+[10/17] Compiling LittleAI Toolbar.swift
+[11/17] Compiling LittleAI OpenAI.swift
+[12/17] Compiling LittleAI Anthropic.swift
+[12/17] Write Objects.LinkFileList
+[13/17] Linking LittleAI
+[14/17] Applying LittleAI
+[16/19] Emitting module LittleAITests
+[17/19] Compiling LittleAITests PromptTests.swift
+[18/21] Emitting module LittleAIPackageTests
+[19/21] Compiling LittleAIPackageTests runner.swift
+[19/21] Write Objects.LinkFileList
+[20/21] Linking LittleAIPackageTests
+Build complete! (5.10s)
+Test Suite 'All tests' started at 2026-04-23 20:19:49.207.
+Test Suite 'LittleAIPackageTests.xctest' started at 2026-04-23 20:19:49.208.
+Test Suite 'PromptTests' started at 2026-04-23 20:19:49.208.
+Test Case '-[LittleAITests.PromptTests testAIRequestDefaultsToNoImages]' started.
+Test Case '-[LittleAITests.PromptTests testAIRequestDefaultsToNoImages]' passed (0.001 seconds).
+Test Case '-[LittleAITests.PromptTests testAIRequestPropagatesImages]' started.
+Test Case '-[LittleAITests.PromptTests testAIRequestPropagatesImages]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditCorrectUsesCorrectionInstruction]' started.
+Test Case '-[LittleAITests.PromptTests testEditCorrectUsesCorrectionInstruction]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditEmbedsContextWhenProvided]' started.
+Test Case '-[LittleAITests.PromptTests testEditEmbedsContextWhenProvided]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditExplainAsksForConcise]' started.
+Test Case '-[LittleAITests.PromptTests testEditExplainAsksForConcise]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditExtendKeepsSelection]' started.
+Test Case '-[LittleAITests.PromptTests testEditExtendKeepsSelection]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditOmitsContextSectionWhenNoContext]' started.
+Test Case '-[LittleAITests.PromptTests testEditOmitsContextSectionWhenNoContext]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditReduceKeepsSelection]' started.
+Test Case '-[LittleAITests.PromptTests testEditReduceKeepsSelection]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditToneDefaultsToProfessional]' started.
+Test Case '-[LittleAITests.PromptTests testEditToneDefaultsToProfessional]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditToneUsesProvidedTone]' started.
+Test Case '-[LittleAITests.PromptTests testEditToneUsesProvidedTone]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testEditTranslateDescribesItEnBidirectional]' started.
+Test Case '-[LittleAITests.PromptTests testEditTranslateDescribesItEnBidirectional]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testGenerateDefaultsToItalian]' started.
+Test Case '-[LittleAITests.PromptTests testGenerateDefaultsToItalian]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testGenerateDetectsLanguagePrefix]' started.
+Test Case '-[LittleAITests.PromptTests testGenerateDetectsLanguagePrefix]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testGenerateIgnoresUnknownPrefix]' started.
+Test Case '-[LittleAITests.PromptTests testGenerateIgnoresUnknownPrefix]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyCodeTargetContainsSectionedSpec]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyCodeTargetContainsSectionedSpec]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyDocumentTargetHasItalianHeadings]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyDocumentTargetHasItalianHeadings]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyFallsBackToDocumentWhenTargetMissing]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyFallsBackToDocumentWhenTargetMissing]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyFromComposeTextReusesTargetSpec]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyFromComposeTextReusesTargetSpec]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyFromImageSystemIsVisionOriented]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyFromImageSystemIsVisionOriented]' passed (0.000 seconds).
+Test Case '-[LittleAITests.PromptTests testPromptifyImageTargetContainsImageSpec]' started.
+Test Case '-[LittleAITests.PromptTests testPromptifyImageTargetContainsImageSpec]' passed (0.000 seconds).
+Test Suite 'PromptTests' passed at 2026-04-23 20:19:49.212.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+Test Suite 'LittleAIPackageTests.xctest' passed at 2026-04-23 20:19:49.212.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+Test Suite 'All tests' passed at 2026-04-23 20:19:49.212.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.003 (0.005) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
