@@ -55,6 +55,10 @@ final class App: NSObject, NSApplicationDelegate {
         ocrToggle.target = self
         ocrToggle.state = Prefs.useOCRContext ? .on : .off
         menu.addItem(ocrToggle)
+        let webSearchToggle = NSMenuItem(title: "Verifica fattuale (Claude web search)", action: #selector(toggleWebSearch(_:)), keyEquivalent: "")
+        webSearchToggle.target = self
+        webSearchToggle.state = Prefs.useWebSearch ? .on : .off
+        menu.addItem(webSearchToggle)
         menu.addItem(.separator())
 
         let providerItem = NSMenuItem(title: "Provider", action: nil, keyEquivalent: "")
@@ -122,6 +126,12 @@ final class App: NSObject, NSApplicationDelegate {
         if Prefs.useOCRContext && !OCR.isPermissionGranted() {
             OCR.requestPermission()
         }
+    }
+
+    @objc private func toggleWebSearch(_ sender: NSMenuItem) {
+        Prefs.useWebSearch.toggle()
+        sender.state = Prefs.useWebSearch ? .on : .off
+        Log.info("useWebSearch toggled -> \(Prefs.useWebSearch)", tag: "app")
     }
 
     /// Builds the Preset submenu freshly each call so it reflects the current preset
@@ -364,20 +374,41 @@ extension App {
     /// stays at the top of the prompt — preset content is appended in clearly labelled
     /// sections so the model knows what's task instruction vs. user-supplied context.
     static func augmentWithPreset(_ req: AIRequest) -> AIRequest {
-        guard let preset = Prefs.activePreset,
-              !preset.systemAddendum.isEmpty || !preset.glossary.isEmpty else {
-            return req
+        var system = req.system
+
+        if let preset = Prefs.activePreset {
+            let trimmedAddendum = preset.systemAddendum.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedGlossary = preset.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedAddendum.isEmpty {
+                system += "\n\n## Contesto utente (preset: \(preset.name))\n\(trimmedAddendum)"
+            }
+            if !trimmedGlossary.isEmpty {
+                system += "\n\n## Glossario / preferenze stilistiche\n\(trimmedGlossary)"
+            }
         }
-        var addendum = ""
-        let trimmedAddendum = preset.systemAddendum.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedGlossary = preset.glossary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedAddendum.isEmpty {
-            addendum += "\n\n## Contesto utente (preset: \(preset.name))\n\(trimmedAddendum)"
+
+        // When the web_search tool is enabled (Anthropic only) we tell the model it has
+        // a way to verify factual claims. The model still decides whether to use it, so
+        // costs only kick in for texts that genuinely contain factual claims worth
+        // verifying. We instruct conservatively: prefer search over speculation, but
+        // don't go on tangents.
+        if Prefs.useWebSearch && Prefs.provider == .anthropic {
+            system += """
+
+
+            ## Verifica fattuale
+            Hai accesso a uno strumento web_search per verificare informazioni online. \
+            Quando incontri affermazioni fattuali (date, nomi propri, prezzi, eventi, \
+            statistiche, citazioni, riferimenti normativi, dettagli di prodotto) sulla \
+            cui correttezza non sei sicuro, fai una ricerca prima di confermare o \
+            modificare il testo. Se trovi un'inesattezza, correggila basandoti sulla \
+            fonte più autorevole reperita. Se la ricerca non chiarisce, mantieni il \
+            testo originale invece di rischiare un'allucinazione. Non aggiungere \
+            citazioni o link nel testo restituito a meno che l'utente non li chieda.
+            """
         }
-        if !trimmedGlossary.isEmpty {
-            addendum += "\n\n## Glossario / preferenze stilistiche\n\(trimmedGlossary)"
-        }
-        return AIRequest(system: req.system + addendum, user: req.user, images: req.images)
+
+        return AIRequest(system: system, user: req.user, images: req.images)
     }
 
     static func buildMainMenu() -> NSMenu {
@@ -492,5 +523,18 @@ enum Prefs {
     static var activePreset: Preset? {
         let id = activePresetID
         return presets.first { $0.id == id }
+    }
+
+    /// When true, requests to Anthropic include the server-side `web_search_20250305`
+    /// tool so Claude can verify factual claims (dates, names, prices, events,
+    /// statistics) against the live web before returning. The model decides whether to
+    /// invoke the tool — text without factual claims won't trigger a search and won't
+    /// incur extra cost. OpenAI Chat Completions doesn't expose an equivalent stable
+    /// tool, so this toggle only influences the Anthropic provider.
+    /// Cost/latency: ~$0.01 per actual search query, ~3-5 s of extra latency for each.
+    /// Default is OFF so the user opts in explicitly.
+    static var useWebSearch: Bool {
+        get { UserDefaults.standard.bool(forKey: "useWebSearch") }
+        set { UserDefaults.standard.set(newValue, forKey: "useWebSearch") }
     }
 }

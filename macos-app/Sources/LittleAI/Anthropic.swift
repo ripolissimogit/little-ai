@@ -523,12 +523,24 @@ enum Anthropic {
             userContent = blocks
         }
 
-        let bodyDict: [String: Any] = [
+        var bodyDict: [String: Any] = [
             "model": model,
             "max_tokens": 4096,
             "system": request.system,
             "messages": [["role": "user", "content": userContent]]
         ]
+        // Server-side web search tool (Anthropic native, not client-executed). When the
+        // user has opted into fact-checking we attach the tool: Claude decides whether
+        // to invoke it based on the prompt content. `max_uses` caps the per-request
+        // search budget so a runaway prompt can't spend dozens of dollars by accident.
+        if Prefs.useWebSearch {
+            bodyDict["tools"] = [[
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            ] as [String: Any]]
+            Log.info("request includes web_search tool (max_uses=5)", tag: "ai")
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
         Log.debug("request bodyBytes=\(req.httpBody?.count ?? 0)", tag: "ai")
 
