@@ -6,8 +6,8 @@ import AppKit
 ///
 /// We use two monitors:
 ///   - `addGlobalMonitorForEvents` receives events headed to other apps (the common case
-///     while LittleAI sits in the menu bar).
-///   - `addLocalMonitorForEvents` receives events headed to LittleAI itself — for example
+///     while Scarabot sits in the menu bar).
+///   - `addLocalMonitorForEvents` receives events headed to Scarabot itself — for example
 ///     while the toolbar panel is key, otherwise the second Shift would be missed.
 ///
 /// Same permission requirement as the older `CGEventTap` (Accessibility), but the

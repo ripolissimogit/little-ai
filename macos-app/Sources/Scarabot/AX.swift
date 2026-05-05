@@ -47,120 +47,95 @@ enum AX {
         }
 
         let app = NSWorkspace.shared.frontmostApplication
-
-        // Snapshot the pasteboard's "freshness" before any AX path runs — sniffViaMenuCopy /
-        // sniffViaClipboard temporarily mutate the pasteboard, which would invalidate the
-        // signal if we read it later. The pasteboard is "fresh" when its changeCount has
-        // moved since the previous captureFocused call: that means the user (or another
-        // process) wrote to it in the meantime — typically a manual ⌘C right before the
-        // hotkey. Update lastSeenChangeCount only at the very end, after our own
-        // restorePasteboard mutations, so we don't accidentally flag our own writes.
-        let pbCountAtEntry = NSPasteboard.general.changeCount
-        let pbWasFresh = (lastSeenChangeCount >= 0) && pbCountAtEntry != lastSeenChangeCount
-
-        guard let element = focusedElement() else {
-            // No focused UI element: Chrome without a focused input, plain desktop,
-            // our own accessory app frontmost, etc. Return a blank target instead of
-            // nil so the toolbar still opens — Generate / PromptifyCompose / PromptFromImage
-            // don't need a selection. Selection-required actions (Edit / Explain) will
-            // no-op gracefully because target.selection.isEmpty. We still consult a fresh
-            // pasteboard: if the user just ⌘C'd inside an unsupported app we want their
-            // text to feed into Edit/Explain.
-            var fallbackSelection = ""
-            if pbWasFresh, let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
-                fallbackSelection = s
-                Log.info("no focused element but pasteboard was fresh — using it as selection (len=\(s.count))", tag: "ax")
-            } else {
-                Log.warn("no focused UI element — returning blank target so toolbar can still open", tag: "ax")
-            }
-            lastSeenChangeCount = NSPasteboard.general.changeCount
-            return Target(
-                selection: fallbackSelection,
-                selectionRect: nil,
-                fallbackCursor: NSEvent.mouseLocation,
-                sourceApp: app,
-                isEditable: false
-            )
-        }
-        Log.debug("focused element: \(describe(element))", tag: "ax")
-
         let bundleID = app?.bundleIdentifier ?? ""
         let isTerminal = terminalBundleIDs.contains(bundleID)
-        Log.debug("app bundleID=\(bundleID) isTerminal=\(isTerminal)", tag: "ax")
+        Log.debug("captureFocused: bundleID=\(bundleID) isTerminal=\(isTerminal)", tag: "ax")
+
+        // Strategy: a synthetic ⌘C is the only thing that works reliably on Chrome,
+        // Electron apps, Word, Pages, IDE editors, and any host whose AX tree is
+        // unreliable or dormant. So we treat ⌘C as the *primary* path, not the fallback.
+        //
+        // Order:
+        //   1. Pasteboard-fresh: if the user did ⌘C themselves between the previous
+        //      capture and this one, that's already the selection — skip the synthetic.
+        //   2. Synthetic ⌘C via CGEvent (cheap, ~15ms). Works on AppKit and most native
+        //      Cocoa apps. Skipped on terminals (would SIGINT the shell if no selection).
+        //   3. Synthetic ⌘C via AppleScript / System Events. Slower (~150ms) but the
+        //      only thing Electron, Chromium tabs, and Apple Events-only apps honour.
+        //      Skipped on terminals.
+        //   4. Menu Edit → Copy via AXPress. Safe on terminals (dispatches `copy:`
+        //      action, not a keystroke, so no SIGINT). Used as the *only* synthetic
+        //      path in terminals.
+        //   5. AX direct (AXSelectedText / WebKit marker range). These are now strictly
+        //      a "couldn't synthesize anything" backstop — they were unreliable enough
+        //      as primary that promoting ⌘C ahead of them dramatically reduces the
+        //      "I selected text and nothing happened" failure mode.
+        //
+        // The pasteboard is restored at the end of every synthetic step so the user's
+        // clipboard is preserved.
+
+        let pb = NSPasteboard.general
+        let pbCountAtEntry = pb.changeCount
+        let pbWasFresh = (lastSeenChangeCount >= 0) && pbCountAtEntry != lastSeenChangeCount
 
         var selected = ""
         var source = "none"
 
-        // 1. Plain AXSelectedText — fastest, works for AppKit text fields, most native apps.
-        if let s = attrString(element, kAXSelectedTextAttribute), !s.isEmpty {
+        // 1. Fresh pasteboard wins outright — we trust the user's explicit ⌘C.
+        if pbWasFresh, let s = pb.string(forType: .string), !s.isEmpty {
             selected = s
-            source = "AXSelectedText"
-            Log.info("AXSelectedText len=\(selected.count)", tag: "ax")
+            source = "pasteboard-fresh"
+            Log.info("pasteboard was fresh — using as selection (len=\(s.count))", tag: "ax")
         }
 
-        // 2. WebKit text markers — Safari, Mail (compose is AppKit, but quoted replies are
-        // WebKit), Notes (rich text), any embedded WKWebView. Exposes selection via
-        // AXSelectedTextMarkerRange instead of AXSelectedText.
+        // 2. + 3. + 4. Synthetic copy. Try CGEvent first (fastest and silent for native
+        // apps), then AppleScript (works on Electron / Chromium where CGEvent is
+        // ignored), then menu AXPress (safe on terminals).
         if selected.isEmpty {
-            if let s = readWebKitSelection(element), !s.isEmpty {
-                selected = s
-                source = "AXTextMarkerRange"
-                Log.info("WebKit marker selection len=\(selected.count)", tag: "ax")
+            if !isTerminal {
+                if let s = sniffViaClipboard(), !s.isEmpty {
+                    selected = s
+                    source = "cgevent"
+                }
+                if selected.isEmpty, let s = sniffViaAppleScript(), !s.isEmpty {
+                    selected = s
+                    source = "applescript"
+                }
             }
-        }
-
-        // 3. Menu AXPress on Edit→Copy — safe everywhere. Doesn't generate a ⌘C keystroke so
-        // it can't be interpreted as SIGINT by a running shell process in Terminal.app.
-        if selected.isEmpty {
-            if let s = sniffViaMenuCopy(app: app), !s.isEmpty {
+            if selected.isEmpty, let s = sniffViaMenuCopy(app: app), !s.isEmpty {
                 selected = s
                 source = "menu-copy"
-                Log.info("menu-copy selection len=\(selected.count)", tag: "ax")
             }
         }
 
-        // 4. Synthetic ⌘C via CGEvent. Skipped for terminal emulators — without an active
-        // selection this would deliver SIGINT to whatever is running in the shell.
-        if selected.isEmpty && !isTerminal {
-            Log.warn("AX/menu paths empty, trying CGEvent ⌘C sniff", tag: "ax")
-            if let s = sniffViaClipboard(), !s.isEmpty {
+        // 5. Last-resort AX direct read. Most apps either let synthetic ⌘C land in 2-4
+        // or hide their selection from AX entirely — this catches the rare case (some
+        // legacy Carbon apps) where neither holds.
+        if selected.isEmpty, let element = focusedElement() {
+            if let s = attrString(element, kAXSelectedTextAttribute), !s.isEmpty {
                 selected = s
-                source = "clipboard-sniff"
-            }
-        } else if selected.isEmpty && isTerminal {
-            Log.info("skipping CGEvent ⌘C sniff for terminal-like app (\(bundleID)) to avoid SIGINT", tag: "ax")
-        }
-
-        // 5. Synthetic ⌘C via AppleScript "System Events". Electron / Chromium / many
-        // IDE-style apps (VSCode, Cursor, Claude Desktop, Slack, Discord, ChatGPT app, …)
-        // ignore raw CGEvent keystrokes but accept Apple Events high-level keystrokes.
-        // Same SIGINT guard for terminals.
-        if selected.isEmpty && !isTerminal {
-            Log.warn("CGEvent ⌘C sniff empty, trying AppleScript ⌘C sniff", tag: "ax")
-            if let s = sniffViaAppleScript(), !s.isEmpty {
+                source = "AXSelectedText"
+            } else if let s = readWebKitSelection(element), !s.isEmpty {
                 selected = s
-                source = "applescript-sniff"
+                source = "AXTextMarkerRange"
             }
         }
 
-        // 6. Final fallback: if every AX/menu/keystroke path failed but the user wrote
-        // something to the pasteboard between this capture and the previous one (typically
-        // a manual ⌘C right before the hotkey), use that. This is the path that "rescues"
-        // Terminal and any other app where AX selection is opaque — the user's documented
-        // workaround is to copy first, then double-shift. We compare to pbCountAtEntry, not
-        // the current count, because our own sniffs above mutate the pasteboard.
-        if selected.isEmpty && pbWasFresh {
-            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
-                selected = s
-                source = "pasteboard-fresh"
-                Log.info("using fresh pasteboard content len=\(selected.count) (changeCount \(lastSeenChangeCount)→\(pbCountAtEntry))", tag: "ax")
-            }
+        // Determine editability + rect when we can find a focused element. If we can't
+        // (Chrome with dormant AX tree, etc.), assume the surface is editable when we
+        // captured a selection — the same surface that responded to ⌘C will respond to
+        // ⌘V too. Static-text views (PDF readers, received emails) lack a selection so
+        // they fall through to non-editable.
+        let element = focusedElement()
+        let rect = element.flatMap { selectionRect($0) }
+        let editable: Bool
+        if let element {
+            editable = isEditable(element, hasSelection: !selected.isEmpty)
+        } else {
+            editable = !selected.isEmpty
         }
 
-        let rect = selectionRect(element)
-        let editable = isEditable(element, hasSelection: !selected.isEmpty)
         Log.info("captureFocused done source=\(source) selLen=\(selected.count) editable=\(editable) rect=\(rect.map { "\($0)" } ?? "nil") app=\(app?.localizedName ?? "?")", tag: "ax")
-
         lastSeenChangeCount = NSPasteboard.general.changeCount
 
         return Target(

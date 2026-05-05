@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build LittleAI come .app bundle firmato con Developer ID.
+# Build Scarabot come .app bundle firmato con Developer ID.
 # - Se esiste icon.png accanto a questo script, lo converte in AppIcon.icns e lo integra.
 # Flags:
 #   --install   Copia l'.app in /Applications dopo il build.
 #   --dmg       Crea un DMG notarizzato e stapled pronto per la distribuzione.
-# Notarization keychain profile: "littleai-notary" (creato una tantum con notarytool
+# Notarization keychain profile: "scarabot-notary" (creato una tantum con notarytool
 # store-credentials).
 set -euo pipefail
 
@@ -23,10 +23,10 @@ for arg in "$@"; do
 done
 
 IDENTITY="Developer ID Application: Claudio Ripoli (6T98N5PN3Y)"
-BUNDLE_ID="ai.little.LittleAI"
-APP_NAME="LittleAI"
-DISPLAY_NAME="Little AI"
-VERSION="0.7"
+BUNDLE_ID="ai.scarabot.Scarabot"
+APP_NAME="Scarabot"
+DISPLAY_NAME="Scarabot"
+VERSION="0.9"
 BUILD_NUM="1"
 NOTARY_PROFILE="littleai-notary"
 
@@ -57,8 +57,19 @@ if [[ -f "icon.png" ]]; then
     iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
     rm -rf "$ICONSET"
     ICON_ENTRY="<key>CFBundleIconFile</key><string>AppIcon</string>"
-    # Also copy a smaller PNG used as the menu bar icon (40pt @2x).
-    sips -z 40 40 icon.png --out "$APP_DIR/Contents/Resources/MenuIcon.png" >/dev/null
+
+    # Menu bar icon. NSStatusItem espone l'icona attraverso un'NSImage che a runtime
+    # impostiamo come template (isTemplate=true): macOS prende l'alpha e la ricolora
+    # in base al tema della menu bar, quindi il PNG sorgente deve essere un glyph
+    # nero opaco su sfondo trasparente, NON un downscale dell'icona dell'app
+    # (sfondo nero su nero = invisibile in dark mode). Renderizziamo menu-icon.svg
+    # con rsvg-convert quando disponibile; altrimenti fallback al vecchio comportamento.
+    if [[ -f "menu-icon.svg" ]] && command -v rsvg-convert >/dev/null 2>&1; then
+        rsvg-convert -w 88 -h 88 menu-icon.svg -o "$APP_DIR/Contents/Resources/MenuIcon.png"
+    else
+        echo "warning: menu-icon.svg or rsvg-convert missing — falling back to opaque icon.png (invisible in dark mode)"
+        sips -z 40 40 icon.png --out "$APP_DIR/Contents/Resources/MenuIcon.png" >/dev/null
+    fi
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -85,7 +96,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Little AI legge e scrive il testo selezionato nelle altre app.</string>
+    <string>Scarabot legge e scrive il testo selezionato nelle altre app.</string>
     $ICON_ENTRY
 </dict>
 </plist>

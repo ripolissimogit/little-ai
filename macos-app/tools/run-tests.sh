@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the LittleAI test suite via `swift test`. Output is tee-d to
+# Runs the Scarabot test suite via `swift test`. Output is tee-d to
 # tools/reports/test-<timestamp>.log so each run leaves a persistent record
 # you can diff against the previous one.
 set -euo pipefail

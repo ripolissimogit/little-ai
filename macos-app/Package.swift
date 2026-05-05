@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "LittleAI",
+    name: "Scarabot",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "LittleAI", targets: ["LittleAI"])
+        .executable(name: "Scarabot", targets: ["Scarabot"])
     ],
     targets: [
         .executableTarget(
-            name: "LittleAI",
-            path: "Sources/LittleAI"
+            name: "Scarabot",
+            path: "Sources/Scarabot"
         ),
         .testTarget(
-            name: "LittleAITests",
-            dependencies: ["LittleAI"],
-            path: "Tests/LittleAITests"
+            name: "ScarabotTests",
+            dependencies: ["Scarabot"],
+            path: "Tests/ScarabotTests"
         ),
     ]
 )

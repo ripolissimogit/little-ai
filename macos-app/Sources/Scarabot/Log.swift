@@ -1,7 +1,7 @@
 import Foundation
 
 /// File-backed logger with optional Axiom sink. Writes every line to
-/// `~/Library/Logs/LittleAI/littleai.log` and mirrors to stderr. The Axiom sink batches
+/// `~/Library/Logs/Scarabot/scarabot.log` and mirrors to stderr. The Axiom sink batches
 /// events and flushes on a timer or when the buffer fills.
 enum Log {
     enum Level: String {
@@ -15,12 +15,12 @@ enum Log {
         let fm = FileManager.default
         let dir = fm.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs", isDirectory: true)
-            .appendingPathComponent("LittleAI", isDirectory: true)
+            .appendingPathComponent("Scarabot", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("littleai.log")
+        return dir.appendingPathComponent("scarabot.log")
     }()
 
-    private static let queue = DispatchQueue(label: "ai.little.LittleAI.log")
+    private static let queue = DispatchQueue(label: "ai.scarabot.Scarabot.log")
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
@@ -44,7 +44,7 @@ enum Log {
 
     static func boot(version: String) {
         Axiom.start()
-        info("=== LittleAI boot v\(version) pid=\(ProcessInfo.processInfo.processIdentifier) ===", tag: "app")
+        info("=== Scarabot boot v\(version) pid=\(ProcessInfo.processInfo.processIdentifier) ===", tag: "app")
         info("log file: \(fileURL.path)", tag: "app")
         if Secrets.axiomToken != nil {
             info("axiom sink enabled dataset=\(Secrets.axiomDataset)", tag: "app")
@@ -86,7 +86,7 @@ enum Axiom {
         guard Secrets.axiomToken != nil else { return nil }
         return URL(string: "https://api.axiom.co/v1/datasets/\(Secrets.axiomDataset)/ingest")
     }
-    private static let queue = DispatchQueue(label: "ai.little.LittleAI.axiom")
+    private static let queue = DispatchQueue(label: "ai.scarabot.Scarabot.axiom")
     private static var buffer: [[String: Any]] = []
     private static var timer: DispatchSourceTimer?
     private static let maxBufferSize = 500

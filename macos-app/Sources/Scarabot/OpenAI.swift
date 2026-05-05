@@ -17,36 +17,19 @@ enum OpenAI {
             throw APIError(status: 0, message: "API key OpenAI mancante. Apri Impostazioni (⌘,) dal menu bar.")
         }
         let keyPreview = maskKey(apiKey)
-        Log.info("request model=\(model) systemLen=\(request.system.count) userLen=\(request.user.count) images=\(request.images.count) key=\(keyPreview)", tag: "ai.openai")
+        Log.info("request model=\(model) systemLen=\(request.system.count) userLen=\(request.user.count) key=\(keyPreview)", tag: "ai.openai")
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        // Mirror the Anthropic path: plain string when no images (keeps the payload small
-        // and behaviour identical to pre-vision builds), content-part array otherwise.
-        let userContent: Any
-        if request.images.isEmpty {
-            userContent = request.user
-        } else {
-            var parts: [[String: Any]] = request.images.map { img in
-                let b64 = img.data.base64EncodedString()
-                return [
-                    "type": "image_url",
-                    "image_url": ["url": "data:\(img.mediaType);base64,\(b64)"],
-                ]
-            }
-            parts.append(["type": "text", "text": request.user])
-            userContent = parts
-        }
-
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 4096,
             "messages": [
                 ["role": "system", "content": request.system],
-                ["role": "user", "content": userContent],
+                ["role": "user", "content": request.user],
             ],
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)

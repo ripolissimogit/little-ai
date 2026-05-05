@@ -22,5 +22,7 @@ Package.resolved
 .env
 .env.*
 secrets.json
+# Secrets.swift is now a thin Keychain wrapper — safe to track. The legacy
+# LittleAI path stays excluded so old worktrees don't accidentally surface it.
 macos-app/Sources/LittleAI/Secrets.swift
 macos-app/dist/

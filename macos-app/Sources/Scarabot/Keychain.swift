@@ -5,7 +5,7 @@ import Security
 /// Stores API keys and tokens that the user enters via the Settings window — nothing
 /// is ever hard-coded into the binary.
 enum Keychain {
-    private static let service = "ai.little.LittleAI"
+    private static let service = "ai.scarabot.Scarabot"
 
     static func set(_ value: String, for key: String) {
         let data = Data(value.utf8)
@@ -52,12 +52,14 @@ enum Keychain {
     enum Key {
         static let anthropic = "anthropic"
         static let openai = "openai"
+        static let tavily = "tavily"
         static let axiomToken = "axiom_token"
         static let axiomDataset = "axiom_dataset"
     }
 
     static var anthropicKey: String? { value(for: Key.anthropic) }
     static var openAIKey: String? { value(for: Key.openai) }
+    static var tavilyKey: String? { value(for: Key.tavily) }
     static var axiomToken: String? { value(for: Key.axiomToken) }
     static var axiomDataset: String? { value(for: Key.axiomDataset) }
 }
