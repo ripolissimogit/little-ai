@@ -136,6 +136,8 @@ final class Toolbar {
         Log.debug("toolbar hide notify=\(notify)", tag: "ui")
         removeDismissMonitors()
         panel?.orderOut(nil)
+        panel = nil
+        hosting = nil
         target = nil
         if notify {
             onDismiss?()
