@@ -37,7 +37,7 @@ private struct SettingsView: View {
     @State private var tavily = Keychain.tavilyKey ?? ""
     @State private var webSearchProvider: WebSearchProvider = Prefs.webSearchProvider
     @State private var axiomToken = Keychain.axiomToken ?? ""
-    @State private var axiomDataset = Keychain.axiomDataset ?? ""
+    @State private var axiomDataset = Keychain.axiomDataset ?? "scarabot"
     @State private var idleOpacity: Double = Prefs.idleOpacity
     @State private var saved = false
 

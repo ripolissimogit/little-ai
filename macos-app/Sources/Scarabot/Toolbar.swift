@@ -22,13 +22,20 @@ final class Toolbar {
     private let gap: CGFloat = 12  // margin from screen edges
 
     var isVisible: Bool { panel != nil }
+    var isInteractive: Bool {
+        guard let panel else { return false }
+        return panel.isKeyWindow && !panel.ignoresMouseEvents
+    }
 
     func show(target: Target) {
         // Defensive: if a panel is already up (e.g. the hotkey fired twice and a stale
         // panel survived), tear it down before creating a fresh one so we never stack.
+        // This is an internal replacement, not a user dismiss: do not fire `onDismiss`,
+        // otherwise App clears the freshly captured target and the visible toolbar
+        // becomes unable to submit.
         if panel != nil {
             Log.warn("show() called while a panel is already visible — dismissing the old one", tag: "ui")
-            hide()
+            hide(notify: false)
         }
         self.target = target
         vm.reset(selection: target.selection, isEditable: target.isEditable)
@@ -93,6 +100,7 @@ final class Toolbar {
         p.backgroundColor = .clear
         p.contentView = visualEffect
         p.hidesOnDeactivate = false
+        p.ignoresMouseEvents = false
         p.delegate = panelDelegate
         panel = p
 
@@ -101,9 +109,13 @@ final class Toolbar {
         // Prefs each time so live changes apply at the next focus transition.
         panelDelegate.onBecomeKey = { [weak self] in
             self?.panel?.alphaValue = 1.0
+            self?.panel?.ignoresMouseEvents = false
+            Log.debug("panel interactive", tag: "ui")
         }
         panelDelegate.onResignKey = { [weak self] in
             self?.panel?.alphaValue = CGFloat(Prefs.idleOpacity)
+            self?.panel?.ignoresMouseEvents = true
+            Log.debug("panel idle click-through", tag: "ui")
         }
 
         relayout()
@@ -116,15 +128,31 @@ final class Toolbar {
         installDismissMonitors()
     }
 
+    func activateExisting() {
+        guard let panel else { return }
+        panel.ignoresMouseEvents = false
+        panel.alphaValue = 1.0
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        Log.info("toolbar reactivated isKey=\(panel.isKeyWindow) frame=\(panel.frame)", tag: "ui")
+    }
+
     func hide() {
+        hide(notify: true)
+    }
+
+    private func hide(notify: Bool) {
         guard panel != nil else { return }
-        Log.debug("toolbar hide", tag: "ui")
+        Log.debug("toolbar hide notify=\(notify)", tag: "ui")
         removeDismissMonitors()
         panel?.orderOut(nil)
         panel = nil
         hosting = nil
         target = nil
-        onDismiss?()
+        if notify {
+            onDismiss?()
+        }
     }
 
     func setLoading() {
@@ -141,9 +169,9 @@ final class Toolbar {
         refocus()
     }
 
-    func setPreview(result: String, diagnostics: String?, mode: ApplyMode) {
-        Log.info("setPreview resultLen=\(result.count) diagLen=\(diagnostics?.count ?? 0) mode=\(mode)", tag: "ui")
-        vm.state = .preview(result, diagnostics, mode)
+    func setPreview(result: String, sources: [SourceLink], mode: ApplyMode) {
+        Log.info("setPreview resultLen=\(result.count) sources=\(sources.count) mode=\(mode)", tag: "ui")
+        vm.state = .preview(result, sources, mode)
         relayout()
         refocus()
     }
@@ -184,6 +212,8 @@ final class Toolbar {
     /// and `.keyboardShortcut(.defaultAction)` fires on Enter.
     private func refocus() {
         guard let panel else { return }
+        panel.ignoresMouseEvents = false
+        panel.alphaValue = 1.0
         panel.makeKey()
         panel.orderFrontRegardless()
         Log.debug("refocus: panel isKey=\(panel.isKeyWindow) isVisible=\(panel.isVisible) frame=\(panel.frame)", tag: "ui")
@@ -293,15 +323,30 @@ enum ApplyMode {
     case copy     // readonly source → pasteboard only, no paste
 }
 
+/// One Tavily result surfaced to the UI: title, url, and the relevance score
+/// the engine assigned. Shown in a collapsible "Fonti consultate" block so the
+/// user can audit what the model was given to read.
+/// Identifiable so SwiftUI's ForEach can diff a list of them.
+struct SourceLink: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let url: String
+    let score: Double?
+}
+
+extension Color {
+    static let scarabotAccent = Color.accentColor
+}
+
 @MainActor
 final class ViewModel: ObservableObject {
     enum State {
         case ready
         case loading
-        /// Preview state. (result, diagnostics?, mode). `diagnostics` is the
-        /// human-facing log shown below the result in Preview view; it never
-        /// gets applied to the source app.
-        case preview(String, String?, ApplyMode)
+        /// Preview state. (result, sources, mode).
+        /// - `sources` are the Tavily URLs consulted for this turn (empty when
+        ///   web search was off or returned nothing).
+        case preview(String, [SourceLink], ApplyMode)
         case error(String)
     }
 
@@ -352,8 +397,8 @@ struct RootView: View {
             ReadyView(vm: vm)
         case .loading:
             LoadingView()
-        case let .preview(result, diagnostics, mode):
-            PreviewView(result: result, diagnostics: diagnostics, mode: mode, vm: vm)
+        case let .preview(result, sources, mode):
+            PreviewView(result: result, sources: sources, mode: mode, vm: vm)
         case let .error(message):
             ErrorView(message: message, vm: vm)
         }
@@ -384,6 +429,9 @@ private struct ReadyView: View {
             composeRow
             Divider()
             infoRow
+            if !vm.hasSelection {
+                CaptureWarningBanner()
+            }
             if let warning = vm.searchWarning {
                 SearchWarningBanner(message: warning)
             }
@@ -474,25 +522,19 @@ private struct LockToggle: View {
             locked.toggle()
             Log.info("LockToggle: locked -> \(locked)", tag: "ui")
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: locked ? "lock.fill" : "lock.open")
-                    .font(.system(size: 11, weight: .medium))
-                Text(locked ? "on" : "off")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(locked ? Color.accentColor.opacity(0.20) : Color.secondary.opacity(0.12))
-                    )
-                    .foregroundStyle(locked ? Color.accentColor : Color.secondary)
-            }
-            .foregroundStyle(.secondary)
+            // Just the icon — the system symbol already encodes the state
+            // (lock.fill = closed/locked, lock.open = open/unlocked). Adding a
+            // separate "on"/"off" pill duplicated the same information twice.
+            // Accent tint when locked makes the active state visible at a
+            // glance against the HUD background without hard-coding a palette.
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(locked ? Color.scarabotAccent : Color.secondary)
         }
         .buttonStyle(.borderless)
         .help(locked
-            ? "Lucchetto attivo: la barra resta aperta dopo aver applicato un risultato. Esc o doppia ⇧ per chiudere."
-            : "Lucchetto: tienilo on per concatenare più prompt senza che la barra si chiuda dopo un'applicazione.")
+            ? "Lucchetto attivo: la barra resta aperta dopo aver applicato un risultato. Click per disattivare."
+            : "Lucchetto: click per tenere aperta la barra dopo le applicazioni e concatenare più prompt.")
     }
 }
 
@@ -570,9 +612,9 @@ private struct WebSearchToggle: View {
                     .padding(.vertical, 1)
                     .background(
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(isOn ? Color.accentColor.opacity(0.20) : Color.secondary.opacity(0.12))
+                            .fill(isOn ? Color.scarabotAccent.opacity(0.20) : Color.secondary.opacity(0.12))
                     )
-                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isOn ? Color.scarabotAccent : Color.secondary)
             }
             .foregroundStyle(.secondary)
         }
@@ -583,6 +625,26 @@ private struct WebSearchToggle: View {
                 ? "Verifica fattuale via Tavily (snippet web iniettati nel prompt)"
                 : "Verifica fattuale via Anthropic web_search (max 5 ricerche per richiesta)")
             : "Anthropic web_search disponibile solo con provider AI Anthropic")
+    }
+}
+
+private struct CaptureWarningBanner: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "selection.pin.in.out")
+                .font(.system(size: 10, weight: .medium))
+            Text("Nessuna selezione catturata. Il prompt genererà testo nuovo. Se avevi evidenziato testo, richiama Scarabot dopo la selezione oppure usa ⌘C come fallback.")
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
     }
 }
 
@@ -611,14 +673,12 @@ private struct SearchWarningBanner: View {
     }
 }
 
-/// Collapsible diagnostics block shown inside the preview view. Tells the user
-/// what the model actually changed, what it left ambiguous, and which web
-/// sources it consulted. Visually distinct from the result text so the user
-/// never confuses "model commentary" with "text to apply" — different background
-/// tint, different font, leading icon. Caps height with a ScrollView so a
-/// chatty model can't push the apply buttons off-screen.
-private struct DiagnosticsBlock: View {
-    let text: String
+/// Audit panel: lists every URL Tavily returned for the last query so the user
+/// can verify *what the model was given* — not just what it inferred. Collapsed
+/// by default because the list can be 20 items long; click the header to expand.
+/// URL clicks open in the system default browser via NSWorkspace.
+private struct SourcesBlock: View {
+    let sources: [SourceLink]
     @Binding var expanded: Bool
 
     var body: some View {
@@ -629,9 +689,9 @@ private struct DiagnosticsBlock: View {
                 HStack(spacing: 4) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
-                    Image(systemName: "doc.text.magnifyingglass")
+                    Image(systemName: "link")
                         .font(.system(size: 10))
-                    Text("Note del modello")
+                    Text("Fonti consultate (\(sources.count))")
                         .font(.system(size: 11, weight: .semibold))
                         .textCase(.uppercase)
                 }
@@ -640,23 +700,73 @@ private struct DiagnosticsBlock: View {
             .buttonStyle(.plain)
             if expanded {
                 ScrollView {
-                    Text(text)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.primary.opacity(0.85))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(10)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(sources) { src in
+                            SourceRow(source: src)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 160)
+                .frame(maxHeight: 200)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.06))
+                        .fill(Color.secondary.opacity(0.06))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.accentColor.opacity(0.18), lineWidth: 0.5)
+                        .stroke(Color.secondary.opacity(0.18), lineWidth: 0.5)
                 )
+            }
+        }
+    }
+}
+
+/// One row in the sources audit. Title (clickable, opens in default browser) +
+/// URL host on the same line, score badge on the right when Tavily returned it.
+/// We show host instead of full URL to keep the row scannable; the link target
+/// is still the full URL.
+private struct SourceRow: View {
+    let source: SourceLink
+
+    private var host: String {
+        URL(string: source.url)?.host ?? source.url
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Button {
+                    if let url = URL(string: source.url) {
+                        NSWorkspace.shared.open(url)
+                        Log.info("SourceRow: opened \(source.url)", tag: "ui")
+                    }
+                } label: {
+                    Text(source.title.isEmpty ? source.url : source.title)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.scarabotAccent)
+                        .underline()
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                }
+                .buttonStyle(.plain)
+                .help(source.url)
+                Text(host)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if let score = source.score {
+                Text(String(format: "%.2f", score))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Color.secondary.opacity(0.12))
+                    )
             }
         }
     }
@@ -675,11 +785,11 @@ private struct LoadingView: View {
 
 private struct PreviewView: View {
     let result: String
-    let diagnostics: String?
+    let sources: [SourceLink]
     let mode: ApplyMode
     @ObservedObject var vm: ViewModel
     @State private var copiedFlash = false
-    @State private var showDiagnostics = true
+    @State private var showSources = false  // collapsed by default — list can be long
 
     private var acceptLabel: String {
         switch mode {
@@ -699,8 +809,19 @@ private struct PreviewView: View {
         }
     }
 
+    private var showsInsertAction: Bool {
+        mode != .insert && !vm.selection.isEmpty
+    }
+
+    private var resultBoxHeight: CGFloat {
+        let explicitLines = result.split(separator: "\n", omittingEmptySubsequences: false).count
+        let wrappedLines = max(1, (result.count / 76) + 1)
+        let lines = max(explicitLines, wrappedLines)
+        return min(max(CGFloat(lines) * 19 + 24, 70), 220)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if let warning = vm.searchWarning {
                 SearchWarningBanner(message: warning)
             }
@@ -715,19 +836,33 @@ private struct PreviewView: View {
                     .foregroundStyle(.tertiary)
                     .monospacedDigit()
             }
-            Text(result)
-                .font(.system(size: 13))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            if let diagnostics, !diagnostics.isEmpty {
-                DiagnosticsBlock(text: diagnostics, expanded: $showDiagnostics)
+            ScrollView {
+                Text(result)
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+            }
+            .frame(height: resultBoxHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.secondary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
+            )
+            if !sources.isEmpty {
+                SourcesBlock(sources: sources, expanded: $showSources)
             }
             HStack(spacing: 8) {
                 Button("Annulla") {
                     Log.info("Preview: Annulla tapped", tag: "ui")
                     vm.onCancel?()
                 }
+                .controlSize(.small)
                 .keyboardShortcut(.cancelAction)
                 Button {
                     Log.info("Preview: Riprova tapped", tag: "ui")
@@ -736,6 +871,7 @@ private struct PreviewView: View {
                     Label("Riprova", systemImage: "arrow.uturn.backward")
                         .labelStyle(.titleAndIcon)
                 }
+                .controlSize(.small)
                 .help("Scarta il risultato e modifica il prompt senza chiudere la barra")
                 Spacer()
                 if showsSecondaryCopy {
@@ -744,18 +880,31 @@ private struct PreviewView: View {
                               systemImage: copiedFlash ? "checkmark" : "doc.on.doc")
                             .labelStyle(.titleAndIcon)
                     }
+                    .controlSize(.small)
                     .help("Copia il risultato negli appunti senza sostituire la selezione (\u{2318}\u{21E7}C)")
                     .keyboardShortcut("c", modifiers: [.command, .shift])
+                }
+                if showsInsertAction {
+                    Button {
+                        Log.info("Preview: Inserisci tapped", tag: "ui")
+                        vm.onAccept?(result, .insert)
+                    } label: {
+                        Label("Inserisci", systemImage: "text.insert")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .controlSize(.small)
+                    .help("Incolla il risultato nel punto attivo dell'app sorgente senza usare Sostituisci")
                 }
                 Button(acceptLabel) {
                     Log.info("Preview: Accept tapped mode=\(mode)", tag: "ui")
                     vm.onAccept?(result, mode)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(maxWidth: 540, alignment: .leading)
     }
 
     /// Copy without leaving preview. Lets the user grab the output for use elsewhere

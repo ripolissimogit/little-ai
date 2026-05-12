@@ -12,12 +12,16 @@ struct AIRequest {
 
 enum Prompt {
     private static let editSystem = """
-    Sei un assistente di scrittura integrato in un'app desktop. Ricevi una porzione di testo \
-    selezionata dall'utente e devi restituire SOLO il testo modificato, senza preamboli, senza \
-    commenti, senza markdown di blocco. Mantieni la lingua originale del testo salvo esplicita \
-    richiesta di traduzione. Conserva la formattazione (a capo, elenchi, indentazione) salvo \
-    richiesta esplicita di modificarla. Non aggiungere virgolette di apertura/chiusura attorno \
-    alla risposta.
+    Sei un editor di testo integrato in un'app macOS. Ricevi un'istruzione e una porzione di \
+    testo selezionata dall'utente: modifica SOLO quella selezione, senza ricordare o usare testi \
+    di turni precedenti. Restituisci soltanto il testo finale da inserire nell'app sorgente: \
+    niente preamboli, niente oggetti strutturati, niente markdown, niente virgolette esterne, \
+    niente commenti.
+
+    Mantieni la lingua originale del testo salvo esplicita richiesta di traduzione. Conserva \
+    formattazione, a capo, elenchi e indentazione salvo richiesta esplicita di modificarli. \
+    Non migliorare lo stile oltre l'istruzione ricevuta: se l'utente chiede correzione, correggi; \
+    se chiede sintesi, sintetizza; se chiede traduzione, traduci.
     """
 
     private static let generateIT = """
@@ -51,16 +55,9 @@ enum Prompt {
 
     /// Free-form edit: the user typed an arbitrary instruction (e.g. "rendi più
     /// formale", "traduci in inglese", "riassumi in 2 righe") and selected text in
-    /// the source app. The model returns a JSON object with two fields:
-    ///   - `result`: the rewritten text. This is what gets applied / copied — must
-    ///     stay clean of any meta-commentary so the source app receives only the
-    ///     edit, not "Here's the rewritten version: …".
-    ///   - `diagnostics`: a short note (max 4 bullet points) about what the model
-    ///     actually changed, what it left ambiguous, and which web sources it
-    ///     consulted (if any were provided in the system prompt). Shown to the
-    ///     user under the preview but never injected into the source app.
-    /// JSON is brittle if the model decides to be chatty, so the caller does
-    /// best-effort parsing with a string fallback (see App.parseEditOutput).
+    /// the source app. The model returns only the rewritten text. This is what
+    /// gets applied / copied; diagnostics are deliberately omitted because this is
+    /// an inline editor, not a chat transcript.
     static func editFreeform(instruction: String, selection: String) -> AIRequest {
         let user = """
         Istruzione dell'utente: \(instruction)
@@ -70,20 +67,15 @@ enum Prompt {
         \(selection)
         \"\"\"
 
-        Rispondi ESCLUSIVAMENTE con un oggetto JSON valido (nessun testo prima o dopo, \
-        nessun blocco di codice markdown, nessuna virgoletta di apertura/chiusura) con \
-        questa forma esatta:
-
-        {"result": "<testo modificato secondo l'istruzione>", "diagnostics": "<note in italiano: cosa hai cambiato e perché, ambiguità o scelte interpretative che hai dovuto fare, e — SE nel system prompt c'è un blocco 'Risultati di ricerca (Tavily)' — quali specifici risultati numerati hai usato per supportare le modifiche fattuali. Massimo 4 punti, separati da '\\n- '.>"}
-
         Regole rigide:
-        - Il valore di `result` deve essere PURO testo finale, mai con preambolo, mai \
-        con virgolette esterne, mai con marker tipo '---'.
+        - Rispondi con PURO testo finale, mai con preambolo, mai con oggetti strutturati, \
+        mai con virgolette esterne, mai con marker tipo '---'.
+        - Usa esclusivamente il testo dentro "Testo selezionato da modificare"; ignora \
+        qualsiasi contenuto non presente in quella sezione.
         - Se non hai dovuto cambiare nulla (testo già perfetto secondo l'istruzione), \
-        restituisci comunque il testo originale in `result` e spiega in `diagnostics`.
+        restituisci il testo originale senza spiegazioni.
         - Mantieni la formattazione originale (a capo, elenchi, indentazione) salvo \
         richiesta esplicita di modifica.
-        - Escapa correttamente le virgolette interne nel JSON.
         """
         return AIRequest(system: editSystem, user: user)
     }
@@ -108,7 +100,7 @@ enum Prompt {
 }
 
 enum Anthropic {
-    static let model = "claude-sonnet-4-6"
+    static let model = "claude-sonnet-4-20250514"
     static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
 
     struct APIError: LocalizedError {

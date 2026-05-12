@@ -13,7 +13,7 @@ final class PromptTests: XCTestCase {
             instruction: "rendi più formale",
             selection: "ciao come va?"
         )
-        XCTAssertTrue(req.system.contains("assistente di scrittura"),
+        XCTAssertTrue(req.system.contains("editor di testo"),
                       "edit system prompt should be used")
         XCTAssertTrue(req.user.contains("rendi più formale"),
                       "user instruction must be passed through")
@@ -23,8 +23,20 @@ final class PromptTests: XCTestCase {
 
     func testEditFreeformDemandsTextOnlyOutput() {
         let req = Prompt.editFreeform(instruction: "tradurre in inglese", selection: "Buongiorno")
-        XCTAssertTrue(req.user.contains("SOLO il testo modificato"),
-                      "the user message must constrain the model to return only the edit")
+        XCTAssertTrue(req.user.contains("PURO testo finale"),
+                      "edit prompts should constrain the model to return only the final text")
+        XCTAssertFalse(req.user.contains("JSON"),
+                       "inline editing should not ask for JSON: the output is pasted into another app")
+        XCTAssertFalse(req.user.contains("diagnostics"),
+                       "inline editing should not ask for model commentary by default")
+    }
+
+    func testEditFreeformSystemPromptMatchesTextOnlyContract() {
+        let req = Prompt.editFreeform(instruction: "correggi", selection: "testo")
+        XCTAssertTrue(req.system.contains("niente oggetti strutturati"),
+                      "system and user prompts must agree on text-only edit output")
+        XCTAssertTrue(req.system.contains("niente commenti"),
+                      "system prompt should prevent commentary from entering the pasted text")
     }
 
     func testEditFreeformPreservesMultilineSelection() {

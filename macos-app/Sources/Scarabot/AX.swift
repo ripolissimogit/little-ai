@@ -33,10 +33,9 @@ enum AX {
     ]
 
     /// `NSPasteboard.general.changeCount` observed at the end of the last `captureFocused`
-    /// call. Used to detect whether the user has copied something between two invocations:
-    /// if the count moved we treat the current pasteboard as a "fresh" selection sniffing
-    /// fallback. -1 means we haven't observed yet (cold start), so the first invocation
-    /// never triggers the fresh-pasteboard path.
+    /// call. Used only as a last-resort fallback after direct selection capture fails.
+    /// The clipboard must never win over the current selection: otherwise Scarabot edits
+    /// whatever the user copied earlier instead of the text they just selected.
     private static var lastSeenChangeCount: Int = -1
 
     static func captureFocused() -> Target? {
@@ -51,13 +50,15 @@ enum AX {
         let isTerminal = terminalBundleIDs.contains(bundleID)
         Log.debug("captureFocused: bundleID=\(bundleID) isTerminal=\(isTerminal)", tag: "ax")
 
-        // Strategy: a synthetic ⌘C is the only thing that works reliably on Chrome,
-        // Electron apps, Word, Pages, IDE editors, and any host whose AX tree is
-        // unreliable or dormant. So we treat ⌘C as the *primary* path, not the fallback.
+        // Strategy: capture the current selection first without touching the
+        // pasteboard when the focused app exposes it through Accessibility. The
+        // pasteboard is only a recovery path for apps whose AX tree is incomplete
+        // or dormant. It must not preempt real selection capture, because copied
+        // text can be unrelated to the current selection.
         //
         // Order:
-        //   1. Pasteboard-fresh: if the user did ⌘C themselves between the previous
-        //      capture and this one, that's already the selection — skip the synthetic.
+        //   1. AX direct (AXSelectedText / WebKit marker range). Zero clipboard
+        //      involvement; best path when the app exposes selection correctly.
         //   2. Synthetic ⌘C via CGEvent (cheap, ~15ms). Works on AppKit and most native
         //      Cocoa apps. Skipped on terminals (would SIGINT the shell if no selection).
         //   3. Synthetic ⌘C via AppleScript / System Events. Slower (~150ms) but the
@@ -66,10 +67,8 @@ enum AX {
         //   4. Menu Edit → Copy via AXPress. Safe on terminals (dispatches `copy:`
         //      action, not a keystroke, so no SIGINT). Used as the *only* synthetic
         //      path in terminals.
-        //   5. AX direct (AXSelectedText / WebKit marker range). These are now strictly
-        //      a "couldn't synthesize anything" backstop — they were unreliable enough
-        //      as primary that promoting ⌘C ahead of them dramatically reduces the
-        //      "I selected text and nothing happened" failure mode.
+        //   5. Pasteboard-fresh fallback. Used only when all current-selection paths
+        //      fail, so stale clipboard content can't override a real selection.
         //
         // The pasteboard is restored at the end of every synthetic step so the user's
         // clipboard is preserved.
@@ -81,37 +80,9 @@ enum AX {
         var selected = ""
         var source = "none"
 
-        // 1. Fresh pasteboard wins outright — we trust the user's explicit ⌘C.
-        if pbWasFresh, let s = pb.string(forType: .string), !s.isEmpty {
-            selected = s
-            source = "pasteboard-fresh"
-            Log.info("pasteboard was fresh — using as selection (len=\(s.count))", tag: "ax")
-        }
-
-        // 2. + 3. + 4. Synthetic copy. Try CGEvent first (fastest and silent for native
-        // apps), then AppleScript (works on Electron / Chromium where CGEvent is
-        // ignored), then menu AXPress (safe on terminals).
-        if selected.isEmpty {
-            if !isTerminal {
-                if let s = sniffViaClipboard(), !s.isEmpty {
-                    selected = s
-                    source = "cgevent"
-                }
-                if selected.isEmpty, let s = sniffViaAppleScript(), !s.isEmpty {
-                    selected = s
-                    source = "applescript"
-                }
-            }
-            if selected.isEmpty, let s = sniffViaMenuCopy(app: app), !s.isEmpty {
-                selected = s
-                source = "menu-copy"
-            }
-        }
-
-        // 5. Last-resort AX direct read. Most apps either let synthetic ⌘C land in 2-4
-        // or hide their selection from AX entirely — this catches the rare case (some
-        // legacy Carbon apps) where neither holds.
-        if selected.isEmpty, let element = focusedElement() {
+        // 1. AX direct read. This is the clean path: no clipboard mutation, no
+        // synthetic keystroke, no stale-copy risk.
+        if let element = focusedElement() {
             if let s = attrString(element, kAXSelectedTextAttribute), !s.isEmpty {
                 selected = s
                 source = "AXSelectedText"
@@ -121,18 +92,44 @@ enum AX {
             }
         }
 
-        // Determine editability + rect when we can find a focused element. If we can't
-        // (Chrome with dormant AX tree, etc.), assume the surface is editable when we
-        // captured a selection — the same surface that responded to ⌘C will respond to
-        // ⌘V too. Static-text views (PDF readers, received emails) lack a selection so
-        // they fall through to non-editable.
+        // 2. + 3. + 4. Synthetic copy. Try CGEvent first (fastest and silent for native
+        // apps), then AppleScript (works on Electron / Chromium where CGEvent is
+        // ignored), then menu AXPress (safe on terminals).
+        if selected.isEmpty, !isTerminal {
+            if let s = sniffViaClipboard(), !s.isEmpty {
+                selected = s
+                source = "cgevent"
+            }
+            if selected.isEmpty, let s = sniffViaAppleScript(), !s.isEmpty {
+                selected = s
+                source = "applescript"
+            }
+        }
+        if selected.isEmpty, let s = sniffViaMenuCopy(app: app), !s.isEmpty {
+            selected = s
+            source = "menu-copy"
+        }
+
+        // 5. Fresh pasteboard fallback. This preserves the Chrome/Electron workaround
+        // where the user explicitly copies just before invoking Scarabot, but only
+        // after every current-selection strategy has failed.
+        if selected.isEmpty, pbWasFresh, let s = pb.string(forType: .string), !s.isEmpty {
+            selected = s
+            source = "pasteboard-fresh-fallback"
+            Log.info("pasteboard fallback used after selection capture failed (len=\(s.count))", tag: "ax")
+        }
+
+        // Determine editability + rect when we can find a focused element. If we cannot
+        // inspect the focused AX node, do not claim replace support: copyability only
+        // proves "this text can be selected", not "this text can be overwritten".
+        // Thread messages and readonly web content are the common failure mode here.
         let element = focusedElement()
         let rect = element.flatMap { selectionRect($0) }
         let editable: Bool
         if let element {
             editable = isEditable(element, hasSelection: !selected.isEmpty)
         } else {
-            editable = !selected.isEmpty
+            editable = false
         }
 
         Log.info("captureFocused done source=\(source) selLen=\(selected.count) editable=\(editable) rect=\(rect.map { "\($0)" } ?? "nil") app=\(app?.localizedName ?? "?")", tag: "ax")
@@ -194,7 +191,8 @@ enum AX {
         return false
     }
 
-    static func write(_ text: String, to target: Target) {
+    @discardableResult
+    static func write(_ text: String, to target: Target, replaceSelection: Bool) -> Bool {
         let sourcePID = target.sourceApp?.processIdentifier ?? -1
         let sourceName = target.sourceApp?.localizedName ?? "?"
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
@@ -208,7 +206,7 @@ enum AX {
             Log.warn("no sourceApp recorded — skipping activation", tag: "ax")
         }
 
-        let deadline = Date().addingTimeInterval(0.3)
+        let deadline = Date().addingTimeInterval(1.5)
         var pollCount = 0
         while NSWorkspace.shared.frontmostApplication?.processIdentifier != sourcePID && Date() < deadline {
             usleep(15_000)
@@ -220,6 +218,12 @@ enum AX {
             Log.info("source app became frontmost after \(pollCount) polls", tag: "ax")
         } else {
             Log.error("source app did NOT become frontmost (polls=\(pollCount) front=\(finalFront) wanted=\(sourcePID))", tag: "ax")
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+            NSSound.beep()
+            Log.warn("write aborted before paste; result copied to pasteboard for manual recovery", tag: "ax")
+            return false
         }
 
         let pb = NSPasteboard.general
@@ -227,6 +231,10 @@ enum AX {
         Log.debug("pasteboard snapshot items=\(snapshot.count)", tag: "ax")
         pb.clearContents()
         pb.setString(text, forType: .string)
+        if !replaceSelection, !target.selection.isEmpty {
+            postKey(0x7C) // Right Arrow: collapse an active text selection before paste.
+            usleep(30_000)
+        }
         postCmd(0x09) // V
         Log.info("posted ⌘V (virtualKey=0x09)", tag: "ax")
         // Restore the previous clipboard after paste has landed.
@@ -234,11 +242,22 @@ enum AX {
             restorePasteboard(pb, items: snapshot)
             Log.debug("pasteboard restored", tag: "ax")
         }
+        return true
     }
 
-    @available(macOS, deprecated: 14.0)
     private static func activate(_ app: NSRunningApplication) -> Bool {
-        app.activate(options: [.activateIgnoringOtherApps])
+        guard let bundleID = app.bundleIdentifier else { return false }
+        let source = """
+        tell application id "\(bundleID)" to activate
+        """
+        var error: NSDictionary?
+        guard let script = NSAppleScript(source: source) else { return false }
+        script.executeAndReturnError(&error)
+        if let error {
+            Log.warn("activate(\(bundleID)) AppleScript error \(error)", tag: "ax")
+            return false
+        }
+        return true
     }
 
     private static func focusedElement() -> AXUIElement? {
@@ -568,13 +587,33 @@ enum AX {
     }
 
     private static func postCmd(_ key: CGKeyCode) {
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        guard let src = CGEventSource(stateID: .combinedSessionState) else {
+            Log.warn("postCmd: CGEventSource creation failed", tag: "ax")
+            return
+        }
+        guard let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false) else {
+            Log.warn("postCmd: CGEvent creation failed", tag: "ax")
+            return
+        }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    private static func postKey(_ key: CGKeyCode) {
+        guard let src = CGEventSource(stateID: .combinedSessionState) else {
+            Log.warn("postKey: CGEventSource creation failed", tag: "ax")
+            return
+        }
+        guard let down = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false) else {
+            Log.warn("postKey: CGEvent creation failed", tag: "ax")
+            return
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
     }
 
     /// Posts a synthetic ⌘C with full modifier sequencing: cmd-down → c-down → c-up →
@@ -585,16 +624,31 @@ enum AX {
     private static func postCmdC() {
         let cKey: CGKeyCode = 0x08
         let cmdLeft: CGKeyCode = 0x37
-        let src = CGEventSource(stateID: .combinedSessionState)
-        let cmdDown = CGEvent(keyboardEventSource: src, virtualKey: cmdLeft, keyDown: true)
-        let cDown = CGEvent(keyboardEventSource: src, virtualKey: cKey, keyDown: true)
-        let cUp = CGEvent(keyboardEventSource: src, virtualKey: cKey, keyDown: false)
-        let cmdUp = CGEvent(keyboardEventSource: src, virtualKey: cmdLeft, keyDown: false)
-        cDown?.flags = .maskCommand
-        cUp?.flags = .maskCommand
-        cmdDown?.post(tap: .cghidEventTap)
-        cDown?.post(tap: .cghidEventTap)
-        cUp?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
+        guard let src = CGEventSource(stateID: .combinedSessionState) else {
+            Log.warn("postCmdC: CGEventSource creation failed", tag: "ax")
+            return
+        }
+        guard let cmdDown = CGEvent(source: src),
+              let cDown = CGEvent(keyboardEventSource: src, virtualKey: cKey, keyDown: true),
+              let cUp = CGEvent(keyboardEventSource: src, virtualKey: cKey, keyDown: false),
+              let cmdUp = CGEvent(source: src) else {
+            Log.warn("postCmdC: CGEvent creation failed", tag: "ax")
+            return
+        }
+        cmdDown.type = .flagsChanged
+        cmdDown.setIntegerValueField(.keyboardEventKeycode, value: Int64(cmdLeft))
+        cmdDown.flags = .maskCommand
+        cmdUp.type = .flagsChanged
+        cmdUp.setIntegerValueField(.keyboardEventKeycode, value: Int64(cmdLeft))
+        cmdUp.flags = []
+        cDown.flags = .maskCommand
+        cUp.flags = .maskCommand
+        cmdDown.post(tap: .cghidEventTap)
+        usleep(12_000)
+        cDown.post(tap: .cghidEventTap)
+        usleep(8_000)
+        cUp.post(tap: .cghidEventTap)
+        usleep(8_000)
+        cmdUp.post(tap: .cghidEventTap)
     }
 }

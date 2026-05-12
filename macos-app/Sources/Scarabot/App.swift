@@ -163,10 +163,23 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func trigger() {
         Log.info("trigger (double-shift) toolbarVisible=\(toolbar.isVisible) inFlight=\(inFlight)", tag: "app")
-        // Toggle: if toolbar is already up, dismiss it and bail.
         if toolbar.isVisible {
-            Log.info("trigger: toolbar already visible — dismissing (toggle)", tag: "app")
-            toolbar.hide()
+            if toolbar.isInteractive {
+                Log.info("trigger: toolbar already interactive — dismissing (toggle)", tag: "app")
+                toolbar.hide()
+            } else {
+                Log.info("trigger: toolbar visible but idle — checking for a fresh selection", tag: "app")
+                if let t = AX.captureFocused(),
+                   t.sourceApp?.bundleIdentifier != Bundle.main.bundleIdentifier,
+                   !t.selection.isEmpty {
+                    Log.info("trigger: replacing idle toolbar target with fresh selection selLen=\(t.selection.count)", tag: "app")
+                    target = t
+                    toolbar.show(target: t)
+                } else {
+                    Log.info("trigger: no fresh selection — reactivating idle toolbar", tag: "app")
+                    toolbar.activateExisting()
+                }
+            }
             return
         }
         guard let t = AX.captureFocused() else {
@@ -188,6 +201,7 @@ final class App: NSObject, NSApplicationDelegate {
     private func runSubmit(prompt: String) {
         guard let t = target else {
             Log.warn("runSubmit ignored — no target", tag: "app")
+            toolbar.setError("Stato interno perso. Chiudi la barra e richiama Scarabot sulla selezione.")
             return
         }
         toolbar.setLoading()
@@ -200,25 +214,20 @@ final class App: NSObject, NSApplicationDelegate {
             // output rules) which would dilute the search.
             let searchQuery = "\(prompt)\n\(t.selection)"
             complete(Prompt.editFreeform(instruction: prompt, selection: t.selection),
-                     mode: mode, searchQuery: searchQuery, structured: true)
+                     mode: mode,
+                     searchQuery: searchQuery,
+                     allowWebSearch: Self.shouldUseWebSearch(for: prompt))
         } else {
             Log.info("runSubmit generate promptLen=\(prompt.count) editable=\(t.isEditable)", tag: "app")
             let mode: ApplyMode = t.isEditable ? .insert : .copy
-            complete(Prompt.generate(prompt: prompt), mode: mode, searchQuery: prompt, structured: false)
+            complete(Prompt.generate(prompt: prompt),
+                     mode: mode,
+                     searchQuery: prompt,
+                     allowWebSearch: Self.shouldUseWebSearch(for: prompt))
         }
     }
 
-    /// Output of a single AI call: the text to apply (always present) and an optional
-    /// human-facing diagnostic block (only present when the prompt asked for it
-    /// and the response could be parsed). Parsing is best-effort: if the model
-    /// drifts off JSON we keep the whole reply as `result` and lose diagnostics
-    /// for that turn rather than failing the request.
-    struct EditOutput {
-        let result: String
-        let diagnostics: String?
-    }
-
-    private func complete(_ req: AIRequest, mode: ApplyMode, searchQuery: String, structured: Bool) {
+    private func complete(_ req: AIRequest, mode: ApplyMode, searchQuery: String, allowWebSearch: Bool) {
         if inFlight {
             Log.warn("complete ignored — another request already in flight", tag: "app")
             return
@@ -226,7 +235,7 @@ final class App: NSObject, NSApplicationDelegate {
         inFlight = true
         let provider = Prefs.provider
         var augmented = Self.augmentForWebSearch(req)
-        Log.info("complete via provider=\(provider.rawValue) structured=\(structured)", tag: "app")
+        Log.info("complete via provider=\(provider.rawValue) allowWebSearch=\(allowWebSearch)", tag: "app")
         Task { @MainActor in
             defer { inFlight = false }
             do {
@@ -234,9 +243,11 @@ final class App: NSObject, NSApplicationDelegate {
                 // the chosen engine) and append them to the system prompt as context. We
                 // do this *before* the AI call so any provider — Anthropic or OpenAI —
                 // benefits, and so we can fall back gracefully if the search fails.
-                if Prefs.useWebSearch && Prefs.webSearchProvider == .tavily {
+                var sources: [SourceLink] = []
+                if Prefs.useWebSearch && allowWebSearch && Prefs.webSearchProvider == .tavily {
                     let outcome = await Self.augmentWithTavily(augmented, query: searchQuery)
                     augmented = outcome.request
+                    sources = outcome.sources
                     self.toolbar.setSearchWarning(outcome.warning)
                 } else {
                     self.toolbar.setSearchWarning(nil)
@@ -246,13 +257,12 @@ final class App: NSObject, NSApplicationDelegate {
                 case .anthropic: raw = try await Anthropic.complete(augmented)
                 case .openai:    raw = try await OpenAI.complete(augmented)
                 }
-                let parsed: EditOutput = structured ? Self.parseEditOutput(raw) : EditOutput(result: raw, diagnostics: nil)
-                Log.info("complete ok resultLen=\(parsed.result.count) diagLen=\(parsed.diagnostics?.count ?? 0)", tag: "app")
+                Log.info("complete ok resultLen=\(raw.count) sources=\(sources.count)", tag: "app")
                 if Prefs.skipPreview {
                     Log.info("apply directly (skipPreview) mode=\(mode)", tag: "app")
-                    apply(parsed.result, mode: mode)
+                    apply(raw, mode: mode)
                 } else {
-                    toolbar.setPreview(result: parsed.result, diagnostics: parsed.diagnostics, mode: mode)
+                    toolbar.setPreview(result: raw, sources: sources, mode: mode)
                 }
             } catch {
                 Log.error("complete failed: \(error.localizedDescription)", tag: "app")
@@ -261,61 +271,44 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Best-effort JSON parsing for edit responses. The model is instructed to
-    /// return `{"result": "...", "diagnostics": "..."}` but real-world output
-    /// drifts: occasional markdown fences, leading prose, the diagnostics field
-    /// missing entirely. Heuristic order:
-    ///   1. Try parsing the whole reply as a JSON object → ideal path.
-    ///   2. Try extracting the substring between the first `{` and the last `}`
-    ///      and parsing that → handles "Here's the JSON: { … }" prefixes.
-    ///   3. Give up: treat the whole reply as `result` and drop diagnostics.
-    /// The user always sees something usable in `result`; diagnostics is a
-    /// best-effort enrichment.
-    static func parseEditOutput(_ raw: String) -> EditOutput {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip leading/trailing code fence markers some models add despite
-        // being told not to.
-        let stripped = trimmed
-            .replacingOccurrences(of: "```json", with: "", options: .caseInsensitive)
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let parsed = decode(stripped) { return parsed }
-
-        // Fallback: substring between first `{` and last `}`.
-        if let lo = stripped.firstIndex(of: "{"),
-           let hi = stripped.lastIndex(of: "}"),
-           lo < hi {
-            let candidate = String(stripped[lo...hi])
-            if let parsed = decode(candidate) { return parsed }
+    /// Fact-checking is expensive and can actively hurt linguistic edits: "traduci in
+    /// inglese" should not fetch 20 news results and inject unrelated facts into the
+    /// prompt. Let explicit factual/search requests through; suppress pure transform
+    /// commands such as translate, correct, rewrite, summarize, tone, and formatting.
+    private static func shouldUseWebSearch(for prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        let factualCues = [
+            "verifica", "controlla", "fact", "fatt", "cerca", "online", "fonte",
+            "fonti", "aggiorna", "recente", "oggi", "prezzo", "data", "numero",
+            "statistica", "chi è", "quando", "dove",
+        ]
+        if factualCues.contains(where: { lower.contains($0) }) {
+            return true
         }
-
-        Log.warn("parseEditOutput: model didn't return parseable JSON, using raw text as result", tag: "app")
-        return EditOutput(result: trimmed, diagnostics: nil)
-    }
-
-    /// Strict JSON decode used by parseEditOutput. Keeps a separate function so
-    /// the fallback path can call it on a substring without duplicating the
-    /// `data(using:)` + `JSONSerialization` boilerplate.
-    private static func decode(_ s: String) -> EditOutput? {
-        guard let data = s.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = obj["result"] as? String,
-              !result.isEmpty
-        else { return nil }
-        let diag = (obj["diagnostics"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return EditOutput(result: result, diagnostics: (diag?.isEmpty == false) ? diag : nil)
+        let transformCues = [
+            "traduci", "tradurre", "translate", "correggi", "correggere", "riscrivi",
+            "rewrite", "rendi", "tono", "formale", "informale", "riassumi",
+            "sintetizza", "accorcia", "allunga", "grammatica", "ortografia",
+        ]
+        if transformCues.contains(where: { lower.contains($0) }) {
+            return false
+        }
+        return true
     }
 
     /// Result of a Tavily augmentation pass.
-    /// `request` is the prompt to actually send (augmented on success, untouched on
-    /// failure). `warning` is set when the user asked for fact-checking but it
-    /// couldn't run — surfaced in the UI so the user knows their result came back
-    /// without the verification they enabled.
+    /// - `request` is the prompt to actually send (augmented on success, untouched
+    ///   on failure).
+    /// - `warning` is set when the user asked for fact-checking but it couldn't
+    ///   run — surfaced in the UI so the user knows their result came back
+    ///   without the verification they enabled.
+    /// - `sources` is the URL list Tavily returned (empty on failure or when web
+    ///   search wasn't requested). Surfaced in the preview's audit block so the
+    ///   user can see exactly what the model was given to read.
     struct TavilyOutcome {
         let request: AIRequest
         let warning: String?
+        let sources: [SourceLink]
     }
 
     /// Esegue una ricerca Tavily usando `query` (NON il `req.user` raw, che contiene
@@ -328,14 +321,18 @@ final class App: NSObject, NSApplicationDelegate {
         if Secrets.tavilyAPIKey == nil {
             return TavilyOutcome(
                 request: req,
-                warning: "Ricerca web non disponibile: chiave Tavily mancante. Impostazioni → Provider AI."
+                warning: "Ricerca web non disponibile: chiave Tavily mancante. Impostazioni → Provider AI.",
+                sources: []
             )
         }
         do {
             let outcome = try await Tavily.search(query)
+            let sources: [SourceLink] = outcome.results.map {
+                SourceLink(title: $0.title, url: $0.url, score: $0.score)
+            }
             guard !outcome.isEmpty else {
                 Log.info("tavily returned no usable context", tag: "app")
-                return TavilyOutcome(request: req, warning: nil)
+                return TavilyOutcome(request: req, warning: nil, sources: sources)
             }
             let block = Tavily.formatAsContext(outcome)
             return TavilyOutcome(
@@ -343,13 +340,11 @@ final class App: NSObject, NSApplicationDelegate {
                     system: req.system + "\n\n" + block,
                     user: req.user
                 ),
-                warning: nil
+                warning: nil,
+                sources: sources
             )
         } catch {
             Log.warn("tavily search failed, proceeding without web context: \(error.localizedDescription)", tag: "app")
-            // 401 is the most common failure mode (wrong/expired key, hidden non-ASCII
-            // characters from autofill). Detect it specifically so the user knows what
-            // to fix; everything else gets the generic message.
             let warning: String
             let lower = error.localizedDescription.lowercased()
             if lower.contains("401") || lower.contains("unauthorized") {
@@ -357,7 +352,7 @@ final class App: NSObject, NSApplicationDelegate {
             } else {
                 warning = "Ricerca web fallita: \(error.localizedDescription)"
             }
-            return TavilyOutcome(request: req, warning: warning)
+            return TavilyOutcome(request: req, warning: warning, sources: [])
         }
     }
 
@@ -388,29 +383,43 @@ final class App: NSObject, NSApplicationDelegate {
         let locked = Prefs.toolbarLocked
         Log.info("apply mode=\(mode) textLen=\(text.count) locked=\(locked)", tag: "app")
         let captured = target
-        // Lock: keep the panel up so the user can fire another prompt without
-        // ⇧⇧'ing again. We still drop the cached selection because it no longer
-        // matches the source app's state after a replace, and operating on a
-        // stale string would silently corrupt the user's text.
-        if locked {
-            toolbar.resetToReady(keepSelection: false)
-        } else {
-            toolbar.hide()
-        }
+
         switch mode {
         case .replace, .insert:
             guard let captured else {
                 Log.error("apply ignored — no target", tag: "app")
                 return
             }
-            AX.write(text, to: captured)
+            let applied = AX.write(text, to: captured, replaceSelection: mode == .replace)
+            guard applied else {
+                let appName = captured.sourceApp?.localizedName ?? "app sorgente"
+                toolbar.setError("Non riesco a riportare \(appName) in primo piano. Risultato copiato negli appunti.")
+                return
+            }
         case .copy:
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.setString(text, forType: .string)
             Log.info("copied result to pasteboard", tag: "app")
         }
-        target = nil
+
+        // Lock: keep the panel up so the user can fire another prompt without
+        // ⇧⇧'ing again. We still drop the cached selection because it no longer
+        // matches the source app's state after a replace, and operating on a
+        // stale string would silently corrupt the user's text.
+        if locked {
+            toolbar.resetToReady(keepSelection: false)
+            target = Target(
+                selection: "",
+                selectionRect: nil,
+                fallbackCursor: NSEvent.mouseLocation,
+                sourceApp: captured?.sourceApp,
+                isEditable: captured?.isEditable ?? false
+            )
+        } else {
+            toolbar.hide()
+            target = nil
+        }
     }
 }
 

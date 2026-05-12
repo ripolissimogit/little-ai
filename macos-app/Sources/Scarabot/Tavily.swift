@@ -67,11 +67,12 @@ enum Tavily {
         var req = URLRequest(url: URL(string: "https://api.tavily.com/search")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        // Tavily auth is via api_key in the body, not Bearer header
         req.timeoutInterval = 12
 
         let topic = Prefs.tavilyTopic
         var body: [String: Any] = [
+            "api_key": key,
             "query": query,
             // `general` indexes Wikipedia, blog posts, official docs, news outlets
             // and forums — basically the open web. `news` filters to press articles

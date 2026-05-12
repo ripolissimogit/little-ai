@@ -33,6 +33,11 @@ final class Hotkey {
     /// reports the post-event flag mask, not the direction of the transition, so we
     /// derive edges by comparing against this remembered state.
     private var shiftWasDown = false
+    /// True after the second tap's down edge. We trigger only on the matching release so
+    /// downstream selection capture runs after Shift is no longer part of the modifier
+    /// state. Firing on second down can turn the synthetic copy into ⌘⇧C in Chromium /
+    /// Electron apps, which silently returns an empty selection.
+    private var waitingForSecondRelease = false
 
     func start() {
         let mask: NSEvent.EventTypeMask = [
@@ -77,25 +82,33 @@ final class Hotkey {
         if isDown && !shiftWasDown {
             // Shift down edge.
             if let armed = armedAt, now - armed <= window {
-                let delta = now - armed
-                Log.debug("double-shift detected (Δ=\(String(format: "%.3f", delta))s)", tag: "hk")
-                armedAt = nil
-                pendingDownAt = nil
+                pendingDownAt = now
+                waitingForSecondRelease = true
                 shiftWasDown = true
-                DispatchQueue.main.async { [weak self] in self?.onTrigger?() }
                 return
             }
             pendingDownAt = now
             armedAt = nil
+            waitingForSecondRelease = false
         } else if !isDown && shiftWasDown {
             // Shift up edge: only count it as a "tap" (=> arm) if shift was held briefly.
             // A long hold (e.g. typing several capitalised words) shouldn't arm.
-            if let down = pendingDownAt, now - down <= window {
+            if waitingForSecondRelease, let down = pendingDownAt, now - down <= window {
+                let delta = armedAt.map { now - $0 } ?? 0
+                Log.debug("double-shift detected (Δ=\(String(format: "%.3f", delta))s)", tag: "hk")
+                armedAt = nil
+                pendingDownAt = nil
+                waitingForSecondRelease = false
+                shiftWasDown = false
+                DispatchQueue.main.async { [weak self] in self?.onTrigger?() }
+                return
+            } else if let down = pendingDownAt, now - down <= window {
                 armedAt = now
             } else {
                 armedAt = nil
             }
             pendingDownAt = nil
+            waitingForSecondRelease = false
         }
         shiftWasDown = isDown
     }
@@ -103,5 +116,6 @@ final class Hotkey {
     private func handleInterrupt() {
         pendingDownAt = nil
         armedAt = nil
+        waitingForSecondRelease = false
     }
 }
