@@ -10,6 +10,8 @@ final class Toolbar {
     var onSubmit: ((String) -> Void)?
     var onAccept: ((String, ApplyMode) -> Void)?
     var onDismiss: (() -> Void)?
+    /// Called when the idle poller detects a new text selection in the source app.
+    var onSelectionRefresh: ((Target) -> Void)?
 
     private var panel: KeyablePanel?
     private var hosting: NSHostingController<RootView>?
@@ -17,6 +19,8 @@ final class Toolbar {
     private let vm = ViewModel()
     private var localKeyMonitor: Any?
     private let panelDelegate = PanelDelegate()
+    private var selectionPoller: Timer?
+    private var isRefreshing = false
 
     private let minWidth: CGFloat = 480
     private let maxWidth: CGFloat = 640
@@ -108,10 +112,12 @@ final class Toolbar {
 
         panelDelegate.onBecomeKey = { [weak self] in
             self?.panel?.alphaValue = 1.0
+            self?.stopSelectionPoller()
             Log.debug("panel interactive", tag: "ui")
         }
         panelDelegate.onResignKey = { [weak self] in
             self?.panel?.alphaValue = CGFloat(Prefs.idleOpacity)
+            self?.startSelectionPoller()
             Log.debug("panel idle transparent", tag: "ui")
         }
     }
@@ -134,6 +140,7 @@ final class Toolbar {
     private func hide(notify: Bool) {
         guard panel != nil else { return }
         Log.debug("toolbar hide notify=\(notify)", tag: "ui")
+        stopSelectionPoller()
         removeDismissMonitors()
         panel?.orderOut(nil)
         panel = nil
@@ -142,6 +149,38 @@ final class Toolbar {
         if notify {
             onDismiss?()
         }
+    }
+
+    /// While the panel is idle (not key), poll the frontmost app every 1s for a
+    /// fresh text selection. If the user highlights new text, the toolbar silently
+    /// adopts it so they can fire another prompt without re-triggering ⇧⇧.
+    private func startSelectionPoller() {
+        stopSelectionPoller()
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isRefreshing, self.panel?.isKeyWindow == false else { return }
+                self.isRefreshing = true
+                if let t = AX.captureFocused(),
+                   t.sourceApp?.bundleIdentifier != Bundle.main.bundleIdentifier,
+                   !t.selection.isEmpty,
+                   t.selection != self.target?.selection {
+                    self.target = t
+                    self.vm.reset(selection: t.selection, isEditable: t.isEditable)
+                    self.onSelectionRefresh?(t)
+                    self.vm.focusRequest.send()
+                    Log.info("selection auto-refreshed len=\(t.selection.count)", tag: "ui")
+                }
+                self.isRefreshing = false
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        selectionPoller = timer
+    }
+
+    private func stopSelectionPoller() {
+        selectionPoller?.invalidate()
+        selectionPoller = nil
+        isRefreshing = false
     }
 
     func setLoading() {

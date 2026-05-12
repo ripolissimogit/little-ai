@@ -111,6 +111,10 @@ final class App: NSObject, NSApplicationDelegate {
             self?.target = nil
             Log.debug("toolbar dismissed", tag: "app")
         }
+        toolbar.onSelectionRefresh = { [weak self] t in
+            self?.target = t
+            Log.debug("target refreshed via poller", tag: "app")
+        }
 
         if !SettingsWindow.isConfigured {
             Log.info("no API keys configured — opening Settings", tag: "app")
