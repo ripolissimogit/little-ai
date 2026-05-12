@@ -42,14 +42,12 @@ private struct SettingsView: View {
     @State private var saved = false
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             TabView {
                 providerTab
-                    .tabItem { Label("Provider AI", systemImage: "brain") }
-                appearanceTab
-                    .tabItem { Label("Aspetto", systemImage: "paintbrush") }
-                axiomTab
-                    .tabItem { Label("Logging", systemImage: "list.bullet.rectangle") }
+                    .tabItem { Label("Provider", systemImage: "brain") }
+                advancedTab
+                    .tabItem { Label("Avanzate", systemImage: "gearshape.2") }
             }
 
             HStack {
@@ -65,25 +63,25 @@ private struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 460)
+        .frame(width: 520, height: 420)
     }
 
     private var providerTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                TestableFieldRow(label: "Anthropic API key", placeholder: "sk-ant-…", text: $anthropic, secure: true,
+                sectionHeader("Intelligenza artificiale")
+                TestableFieldRow(label: "Anthropic", placeholder: "sk-ant-…", text: $anthropic, secure: true,
                                  tester: { await KeyTester.testAnthropic($0) })
-                TestableFieldRow(label: "OpenAI API key", placeholder: "sk-proj-…", text: $openai, secure: true,
+                TestableFieldRow(label: "OpenAI", placeholder: "sk-proj-…", text: $openai, secure: true,
                                  tester: { await KeyTester.testOpenAI($0) })
-                Text("Serve almeno una delle due. Il provider attivo si sceglie dal menu bar.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Divider().padding(.vertical, 4)
-                TestableFieldRow(label: "Tavily API key (ricerca web)", placeholder: "tvly-…", text: $tavily, secure: true,
+
+                Divider().padding(.vertical, 2)
+
+                sectionHeader("Ricerca web")
+                TestableFieldRow(label: "Tavily", placeholder: "tvly-…", text: $tavily, secure: true,
                                  tester: { await KeyTester.testTavily($0) })
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Motore di ricerca per la verifica fattuale")
+                HStack {
+                    Text("Motore")
                         .font(.system(size: 12, weight: .medium))
                     Picker("", selection: $webSearchProvider) {
                         ForEach(WebSearchProvider.allCases, id: \.self) { p in
@@ -95,10 +93,7 @@ private struct SettingsView: View {
                     .onChange(of: webSearchProvider) { _, newValue in
                         Prefs.webSearchProvider = newValue
                     }
-                    Text("Tavily: ricerca web esterna pre-iniettata nel prompt — funziona con Anthropic e OpenAI. Anthropic web_search: tool server-side, solo provider Anthropic.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
                 }
             }
             .padding(20)
@@ -106,49 +101,39 @@ private struct SettingsView: View {
         }
     }
 
-    private var appearanceTab: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
+    private var advancedTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                sectionHeader("Aspetto")
                 HStack {
-                    Text("Trasparenza quando inattiva")
+                    Text("Opacità inattiva")
                         .font(.system(size: 12, weight: .medium))
                     Spacer()
                     Text("\(Int(idleOpacity * 100))%")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: $idleOpacity, in: 0.1...1.0, step: 0.05) {
-                    Text("Trasparenza")
-                } minimumValueLabel: {
-                    Text("10%").font(.caption2).foregroundStyle(.secondary)
-                } maximumValueLabel: {
-                    Text("100%").font(.caption2).foregroundStyle(.secondary)
-                }
-                .onChange(of: idleOpacity) { _, newValue in
-                    Prefs.idleOpacity = newValue
-                }
-                Text("Quando la barra non è la finestra attiva (es. mentre lavori nell'app sottostante) viene attenuata a questa opacità. La modifica si applica al prossimo cambio di focus.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Slider(value: $idleOpacity, in: 0.1...1.0, step: 0.05)
+                    .onChange(of: idleOpacity) { _, newValue in
+                        Prefs.idleOpacity = newValue
+                    }
+
+                Divider().padding(.vertical, 2)
+
+                sectionHeader("Logging remoto")
+                FieldRow(label: "Dataset", placeholder: "scarabot", text: $axiomDataset, secure: false)
+                TestableFieldRow(label: "Token", placeholder: "xaat-…", text: $axiomToken, secure: true,
+                                 tester: { await KeyTester.testAxiom($0) })
             }
-            Spacer(minLength: 0)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(20)
     }
 
-    private var axiomTab: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            TestableFieldRow(label: "Axiom API token", placeholder: "xaat-…", text: $axiomToken, secure: true,
-                             tester: { await KeyTester.testAxiom($0) })
-            FieldRow(label: "Axiom dataset", placeholder: "scarabot", text: $axiomDataset, secure: false)
-            Text("Lascia vuoto per disabilitare Axiom. I log restano comunque su file locale.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(20)
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
     }
 
     private func save() {
