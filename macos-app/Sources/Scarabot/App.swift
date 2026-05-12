@@ -55,6 +55,10 @@ final class App: NSObject, NSApplicationDelegate {
         toggle.target = self
         toggle.state = Prefs.skipPreview ? .on : .off
         menu.addItem(toggle)
+        let lockToggle = NSMenuItem(title: "Blocca barra", action: #selector(toggleLock(_:)), keyEquivalent: "")
+        lockToggle.target = self
+        lockToggle.state = Prefs.toolbarLocked ? .on : .off
+        menu.addItem(lockToggle)
         let webSearchToggle = NSMenuItem(title: "Verifica fattuale (ricerca online)", action: #selector(toggleWebSearch(_:)), keyEquivalent: "")
         webSearchToggle.target = self
         webSearchToggle.state = Prefs.useWebSearch ? .on : .off
@@ -128,6 +132,12 @@ final class App: NSObject, NSApplicationDelegate {
         Prefs.useWebSearch.toggle()
         sender.state = Prefs.useWebSearch ? .on : .off
         Log.info("useWebSearch toggled -> \(Prefs.useWebSearch)", tag: "app")
+    }
+
+    @objc private func toggleLock(_ sender: NSMenuItem) {
+        Prefs.toolbarLocked.toggle()
+        sender.state = Prefs.toolbarLocked ? .on : .off
+        Log.info("toolbarLocked toggled -> \(Prefs.toolbarLocked)", tag: "app")
     }
 
     @objc private func selectWebSearchProvider(_ sender: NSMenuItem) {
@@ -271,29 +281,29 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Fact-checking is expensive and can actively hurt linguistic edits: "traduci in
-    /// inglese" should not fetch 20 news results and inject unrelated facts into the
-    /// prompt. Let explicit factual/search requests through; suppress pure transform
-    /// commands such as translate, correct, rewrite, summarize, tone, and formatting.
+    /// Determines whether a prompt benefits from live web search. The heuristic is
+    /// deliberately conservative: pure text transformations (translate, rewrite,
+    /// summarize, tone) never trigger an expensive search. Factual queries — dates,
+    /// prices, names, events, wh-questions — do. Everything else defaults to false
+    /// so the motore doesn't waste credits on ambiguous instructions.
+    private static let factualRegex = try! NSRegularExpression(
+        pattern: "\\b(20\\d{2}|19\\d{2})\\b|[$€£]\\s*\\d+\\b|\\b\\d+\\s*(milioni|miliardi|percento|%|€|$|usd|eur)\\b|\\b(chi|che\\s+cosa|cosa|dove|quando|perch[eé]|quanto|quanti|quale)\\b|\\b(oggi|ieri|ultim[oa]|recente|prossim[oa]|attualmente|attuale|nomin[oa]|premio|vincitor[ea]|elezioni|gross|incasso|record|verifica|controlla|fonte|fonti|aggiorna|prezzo|statistica|numero)\\b",
+        options: .caseInsensitive
+    )
+
     private static func shouldUseWebSearch(for prompt: String) -> Bool {
         let lower = prompt.lowercased()
-        let factualCues = [
-            "verifica", "controlla", "fact", "fatt", "cerca", "online", "fonte",
-            "fonti", "aggiorna", "recente", "oggi", "prezzo", "data", "numero",
-            "statistica", "chi è", "quando", "dove",
-        ]
-        if factualCues.contains(where: { lower.contains($0) }) {
-            return true
-        }
         let transformCues = [
             "traduci", "tradurre", "translate", "correggi", "correggere", "riscrivi",
             "rewrite", "rendi", "tono", "formale", "informale", "riassumi",
             "sintetizza", "accorcia", "allunga", "grammatica", "ortografia",
+            "parafrasa", "riformula", "adatta", "semplifica", "rivedi",
         ]
         if transformCues.contains(where: { lower.contains($0) }) {
             return false
         }
-        return true
+        let range = NSRange(lower.startIndex..., in: lower)
+        return factualRegex.firstMatch(in: lower, options: [], range: range) != nil
     }
 
     /// Result of a Tavily augmentation pass.

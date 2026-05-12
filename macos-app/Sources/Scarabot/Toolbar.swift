@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Floating NSPanel pinned at the bottom-center of the screen, hosting the unified
@@ -24,19 +25,10 @@ final class Toolbar {
     var isVisible: Bool { panel != nil }
     var isInteractive: Bool {
         guard let panel else { return false }
-        return panel.isKeyWindow && !panel.ignoresMouseEvents
+        return panel.isKeyWindow
     }
 
     func show(target: Target) {
-        // Defensive: if a panel is already up (e.g. the hotkey fired twice and a stale
-        // panel survived), tear it down before creating a fresh one so we never stack.
-        // This is an internal replacement, not a user dismiss: do not fire `onDismiss`,
-        // otherwise App clears the freshly captured target and the visible toolbar
-        // becomes unable to submit.
-        if panel != nil {
-            Log.warn("show() called while a panel is already visible — dismissing the old one", tag: "ui")
-            hide(notify: false)
-        }
         self.target = target
         vm.reset(selection: target.selection, isEditable: target.isEditable)
         Log.info("toolbar show selLen=\(target.selection.count)", tag: "ui")
@@ -60,11 +52,22 @@ final class Toolbar {
             DispatchQueue.main.async { self?.relayout() }
         }
 
+        if panel == nil {
+            preparePanel()
+        }
+
+        relayout()
+        NSApp.activate(ignoringOtherApps: true)
+        panel?.makeKeyAndOrderFront(nil)
+        panel?.makeFirstResponder(nil)
+        vm.focusRequest.send()
+        Log.info("toolbar shown isKey=\(panel?.isKeyWindow ?? false) isVisible=\(panel?.isVisible ?? false)", tag: "ui")
+        installDismissMonitors()
+    }
+
+    private func preparePanel() {
         let hc = NSHostingController(rootView: RootView(vm: vm))
         hosting = hc
-        // NSVisualEffectView is the panel's root contentView: opaque hit target across
-        // its frame, HUD blur, rounded corners via CALayer. The SwiftUI hosting view
-        // rides on top as a transparent overlay.
         let visualEffect = NSVisualEffectView()
         visualEffect.material = .hudWindow
         visualEffect.blendingMode = .behindWindow
@@ -100,41 +103,27 @@ final class Toolbar {
         p.backgroundColor = .clear
         p.contentView = visualEffect
         p.hidesOnDeactivate = false
-        p.ignoresMouseEvents = false
         p.delegate = panelDelegate
         panel = p
 
-        // Idle transparency: when the panel loses key status (user clicks back into the
-        // source app), fade to the user-configured opacity. Restore on regain. Reads
-        // Prefs each time so live changes apply at the next focus transition.
         panelDelegate.onBecomeKey = { [weak self] in
             self?.panel?.alphaValue = 1.0
-            self?.panel?.ignoresMouseEvents = false
             Log.debug("panel interactive", tag: "ui")
         }
         panelDelegate.onResignKey = { [weak self] in
             self?.panel?.alphaValue = CGFloat(Prefs.idleOpacity)
-            self?.panel?.ignoresMouseEvents = true
-            Log.debug("panel idle click-through", tag: "ui")
+            Log.debug("panel idle transparent", tag: "ui")
         }
-
-        relayout()
-        // Accessory apps can't receive key status for their panels — ActivationPolicy is
-        // .regular for the lifetime of the app so this just ensures focus.
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-        p.makeFirstResponder(nil)
-        Log.info("toolbar shown isKey=\(p.isKeyWindow) isVisible=\(p.isVisible)", tag: "ui")
-        installDismissMonitors()
     }
 
     func activateExisting() {
         guard let panel else { return }
-        panel.ignoresMouseEvents = false
         panel.alphaValue = 1.0
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
+        vm.focusRequest.send()
+        installDismissMonitors()
         Log.info("toolbar reactivated isKey=\(panel.isKeyWindow) frame=\(panel.frame)", tag: "ui")
     }
 
@@ -147,8 +136,6 @@ final class Toolbar {
         Log.debug("toolbar hide notify=\(notify)", tag: "ui")
         removeDismissMonitors()
         panel?.orderOut(nil)
-        panel = nil
-        hosting = nil
         target = nil
         if notify {
             onDismiss?()
@@ -176,9 +163,6 @@ final class Toolbar {
         refocus()
     }
 
-    /// Surface a transient warning about web search (Tavily 401, network down, …).
-    /// Visible inline in the preview view so the user knows their last result was
-    /// produced *without* the fact-checking they enabled. Pass nil to clear.
     func setSearchWarning(_ message: String?) {
         if let message {
             Log.warn("setSearchWarning: \(message)", tag: "ui")
@@ -187,14 +171,6 @@ final class Toolbar {
         relayout()
     }
 
-    /// Soft reset: returns the panel to the `.ready` state without dismissing it.
-    /// Two callers:
-    ///   - The "Riprova" button in the preview view (`keepSelection=true`): the
-    ///     user wants to discard the AI result and try a different prompt on the
-    ///     same selection.
-    ///   - `App.apply()` when the lock toggle is on (`keepSelection=false`): the
-    ///     selection has been consumed by the apply, but the user wants the panel
-    ///     to stay up for the next prompt.
     func resetToReady(keepSelection: Bool) {
         Log.debug("resetToReady keepSelection=\(keepSelection)", tag: "ui")
         if !keepSelection {
@@ -205,14 +181,11 @@ final class Toolbar {
         vm.state = .ready
         relayout()
         refocus()
+        vm.focusRequest.send()
     }
 
-    /// After a state change the NSHostingController may lose key status (especially
-    /// during long network calls). Re-assert key so SwiftUI buttons receive clicks
-    /// and `.keyboardShortcut(.defaultAction)` fires on Enter.
     private func refocus() {
         guard let panel else { return }
-        panel.ignoresMouseEvents = false
         panel.alphaValue = 1.0
         panel.makeKey()
         panel.orderFrontRegardless()
@@ -226,8 +199,6 @@ final class Toolbar {
                 self?.hide()
                 return nil
             }
-            // Forward standard editing shortcuts to the first responder. Borderless
-            // panels can miss main-menu routing for ⌘V/⌘C/⌘X/⌘A, so we dispatch manually.
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if mods == .command, let chars = event.charactersIgnoringModifiers {
                 let sel: Selector?
@@ -252,10 +223,6 @@ final class Toolbar {
         localKeyMonitor = nil
     }
 
-    /// Resize to hug SwiftUI content, then pin to the bottom-center of the screen the
-    /// cursor is on. NSHostingController.sizeThatFits honours a width proposal —
-    /// NSHostingView.fittingSize ignores it. We ask twice: unconstrained for a width
-    /// hint, then with the clamped width for height-for-width.
     private func relayout() {
         guard let panel, let hc = hosting, let t = target else { return }
         hc.view.needsLayout = true
@@ -369,6 +336,9 @@ final class ViewModel: ObservableObject {
     /// dismissing the panel. Selection is preserved.
     var onClean: (() -> Void)?
     var onContentSizeChange: (() -> Void)?
+    /// Signal to ReadyView that it should grab focus. Fired after every state
+    /// transition back to .ready, after activateExisting, and after show.
+    let focusRequest = PassthroughSubject<Void, Never>()
 
     func reset(selection: String, isEditable: Bool) {
         self.selection = selection
@@ -429,19 +399,12 @@ private struct ReadyView: View {
             composeRow
             Divider()
             infoRow
-            if !vm.hasSelection {
-                CaptureWarningBanner()
-            }
-            if let warning = vm.searchWarning {
-                SearchWarningBanner(message: warning)
-            }
         }
         .onAppear {
-            // Defer the focus assignment so the panel has time to receive
-            // `windowDidBecomeKey` before the TextField asks to become first
-            // responder. Without this hop the field never wins focus and the
-            // user can't type.
             DispatchQueue.main.async { composeFocused = true }
+        }
+        .onReceive(vm.focusRequest) { _ in
+            composeFocused = true
         }
     }
 
@@ -471,9 +434,16 @@ private struct ReadyView: View {
         HStack(spacing: 8) {
             SelectionStats(selection: vm.selection)
             Spacer(minLength: 8)
-            LockToggle()
-            TavilyTopicToggle()
-            WebSearchToggle()
+            if let warning = vm.searchWarning {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 9))
+                    Text(warning)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.orange)
+            }
         }
     }
 
@@ -512,167 +482,6 @@ private struct SelectionStats: View {
 }
 
 /// Lock toggle: when on, applying a result (replace / insert / copy) doesn't close
-/// the panel — the toolbar resets to .ready so the user can fire another prompt
-/// without re-triggering ⇧⇧. Persistent via @AppStorage so it survives app restarts.
-private struct LockToggle: View {
-    @AppStorage("toolbarLocked") private var locked: Bool = false
-
-    var body: some View {
-        Button {
-            locked.toggle()
-            Log.info("LockToggle: locked -> \(locked)", tag: "ui")
-        } label: {
-            // Just the icon — the system symbol already encodes the state
-            // (lock.fill = closed/locked, lock.open = open/unlocked). Adding a
-            // separate "on"/"off" pill duplicated the same information twice.
-            // Accent tint when locked makes the active state visible at a
-            // glance against the HUD background without hard-coding a palette.
-            Image(systemName: locked ? "lock.fill" : "lock.open")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(locked ? Color.scarabotAccent : Color.secondary)
-        }
-        .buttonStyle(.borderless)
-        .help(locked
-            ? "Lucchetto attivo: la barra resta aperta dopo aver applicato un risultato. Click per disattivare."
-            : "Lucchetto: click per tenere aperta la barra dopo le applicazioni e concatenare più prompt.")
-    }
-}
-
-/// Tavily topic toggle: web (general) ↔ news. Visible only when web search is on
-/// AND the chosen engine is Tavily — Anthropic web_search has its own topic logic.
-/// Persistent via @AppStorage. Faded out when not active so the user knows the
-/// setting won't take effect until they enable Tavily.
-private struct TavilyTopicToggle: View {
-    @AppStorage("tavilyTopic") private var topicRaw: String = "general"
-    @AppStorage("useWebSearch") private var useWebSearch: Bool = false
-    @AppStorage("webSearchProvider") private var searchProviderRaw: String = "tavily"
-
-    private var isActive: Bool {
-        useWebSearch && (WebSearchProvider(rawValue: searchProviderRaw) ?? .tavily) == .tavily
-    }
-    private var isNews: Bool { topicRaw == "news" }
-
-    var body: some View {
-        Button {
-            topicRaw = isNews ? "general" : "news"
-            Log.info("TavilyTopicToggle: topic -> \(topicRaw)", tag: "ui")
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: isNews ? "newspaper" : "globe")
-                    .font(.system(size: 11, weight: .medium))
-                Text(isNews ? "news" : "web")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.secondary.opacity(0.12))
-                    )
-                    .foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.borderless)
-        .opacity(isActive ? 1 : 0.4)
-        .disabled(!isActive)
-        .help(isNews
-            ? "Tavily filtra solo articoli di stampa degli ultimi 12 mesi. Click per tornare a Web (Wikipedia, blog, doc + news)."
-            : "Tavily indicizza l'intero web. Click per restringere a sole news (utile per fatti recenti).")
-    }
-}
-
-/// Web search toggle button. Compact and always visible. Disabled only when the user
-/// picked Anthropic web_search but the AI provider is OpenAI (incompatible combo).
-private struct WebSearchToggle: View {
-    @AppStorage("useWebSearch") private var useWebSearch: Bool = false
-    @AppStorage("provider") private var providerRaw: String = "anthropic"
-    @AppStorage("webSearchProvider") private var searchProviderRaw: String = "tavily"
-
-    private var searchProvider: WebSearchProvider {
-        WebSearchProvider(rawValue: searchProviderRaw) ?? .tavily
-    }
-    private var isCompatible: Bool {
-        searchProvider == .tavily || providerRaw == "anthropic"
-    }
-    private var isOn: Bool { useWebSearch && isCompatible }
-
-    var body: some View {
-        Button {
-            useWebSearch.toggle()
-            Log.info("WebSearchToggle: useWebSearch -> \(useWebSearch)", tag: "ui")
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: isOn ? "globe.badge.chevron.backward" : "globe")
-                    .font(.system(size: 11, weight: .medium))
-                Text(searchProvider == .tavily ? "Tavily" : "Web")
-                    .font(.system(size: 11, weight: .medium))
-                Text(isOn ? "on" : "off")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(isOn ? Color.scarabotAccent.opacity(0.20) : Color.secondary.opacity(0.12))
-                    )
-                    .foregroundStyle(isOn ? Color.scarabotAccent : Color.secondary)
-            }
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.borderless)
-        .disabled(!isCompatible)
-        .help(isCompatible
-            ? (searchProvider == .tavily
-                ? "Verifica fattuale via Tavily (snippet web iniettati nel prompt)"
-                : "Verifica fattuale via Anthropic web_search (max 5 ricerche per richiesta)")
-            : "Anthropic web_search disponibile solo con provider AI Anthropic")
-    }
-}
-
-private struct CaptureWarningBanner: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "selection.pin.in.out")
-                .font(.system(size: 10, weight: .medium))
-            Text("Nessuna selezione catturata. Il prompt genererà testo nuovo. Se avevi evidenziato testo, richiama Scarabot dopo la selezione oppure usa ⌘C come fallback.")
-                .font(.system(size: 11))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.secondary.opacity(0.10))
-        )
-    }
-}
-
-/// Inline orange banner shown when the last request couldn't reach the web search
-/// provider (Tavily HTTP error, network down, …). The AI result still came through —
-/// this just tells the user that the fact-checking they asked for didn't happen.
-private struct SearchWarningBanner: View {
-    let message: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 10, weight: .medium))
-            Text(message)
-                .font(.system(size: 11))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.orange)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.orange.opacity(0.12))
-        )
-    }
-}
-
 /// Audit panel: lists every URL Tavily returned for the last query so the user
 /// can verify *what the model was given* — not just what it inferred. Collapsed
 /// by default because the list can be 20 items long; click the header to expand.
@@ -788,8 +597,7 @@ private struct PreviewView: View {
     let sources: [SourceLink]
     let mode: ApplyMode
     @ObservedObject var vm: ViewModel
-    @State private var copiedFlash = false
-    @State private var showSources = false  // collapsed by default — list can be long
+    @State private var showSources = false
 
     private var acceptLabel: String {
         switch mode {
@@ -797,20 +605,6 @@ private struct PreviewView: View {
         case .insert: return "Inserisci"
         case .copy: return "Copia"
         }
-    }
-
-    /// `Copia` shows up as a secondary action only when the primary isn't already
-    /// "Copia". When the source surface is readonly the primary already does the same
-    /// thing so a duplicate would be confusing.
-    private var showsSecondaryCopy: Bool {
-        switch mode {
-        case .copy: return false
-        case .replace, .insert: return true
-        }
-    }
-
-    private var showsInsertAction: Bool {
-        mode != .insert && !vm.selection.isEmpty
     }
 
     private var resultBoxHeight: CGFloat {
@@ -823,7 +617,14 @@ private struct PreviewView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let warning = vm.searchWarning {
-                SearchWarningBanner(message: warning)
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 9))
+                    Text(warning)
+                        .font(.system(size: 10))
+                        .lineLimit(2)
+                }
+                .foregroundStyle(.orange)
             }
             HStack {
                 Text("Anteprima")
@@ -868,33 +669,11 @@ private struct PreviewView: View {
                     Log.info("Preview: Riprova tapped", tag: "ui")
                     vm.onClean?()
                 } label: {
-                    Label("Riprova", systemImage: "arrow.uturn.backward")
-                        .labelStyle(.titleAndIcon)
+                    Image(systemName: "arrow.uturn.backward")
                 }
                 .controlSize(.small)
-                .help("Scarta il risultato e modifica il prompt senza chiudere la barra")
+                .help("Scarta e modifica il prompt")
                 Spacer()
-                if showsSecondaryCopy {
-                    Button(action: copyToPasteboard) {
-                        Label(copiedFlash ? "Copiato" : "Copia",
-                              systemImage: copiedFlash ? "checkmark" : "doc.on.doc")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .controlSize(.small)
-                    .help("Copia il risultato negli appunti senza sostituire la selezione (\u{2318}\u{21E7}C)")
-                    .keyboardShortcut("c", modifiers: [.command, .shift])
-                }
-                if showsInsertAction {
-                    Button {
-                        Log.info("Preview: Inserisci tapped", tag: "ui")
-                        vm.onAccept?(result, .insert)
-                    } label: {
-                        Label("Inserisci", systemImage: "text.insert")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .controlSize(.small)
-                    .help("Incolla il risultato nel punto attivo dell'app sorgente senza usare Sostituisci")
-                }
                 Button(acceptLabel) {
                     Log.info("Preview: Accept tapped mode=\(mode)", tag: "ui")
                     vm.onAccept?(result, mode)
@@ -905,20 +684,6 @@ private struct PreviewView: View {
             }
         }
         .frame(maxWidth: 540, alignment: .leading)
-    }
-
-    /// Copy without leaving preview. Lets the user grab the output for use elsewhere
-    /// (e.g. paste into a third app) while still being able to Sostituisci / Inserisci
-    /// in the source. Cheap NSPasteboard write — no need to round-trip through App.
-    private func copyToPasteboard() {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(result, forType: .string)
-        Log.info("Preview: secondary Copia tapped resultLen=\(result.count)", tag: "ui")
-        withAnimation(.easeOut(duration: 0.15)) { copiedFlash = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            withAnimation(.easeOut(duration: 0.2)) { copiedFlash = false }
-        }
     }
 
     private func stats(_ s: String) -> String {
