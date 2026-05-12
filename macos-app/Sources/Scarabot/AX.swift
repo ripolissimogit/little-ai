@@ -38,6 +38,18 @@ enum AX {
     /// whatever the user copied earlier instead of the text they just selected.
     private static var lastSeenChangeCount: Int = -1
 
+    /// Fast path: reads the selected text from the frontmost app *only* if it is
+    /// still `app`. No clipboard sniffing, no AppleScript, no keystrokes — just
+    /// AX direct attributes. Used by the idle selection poller so it stays
+    /// lightweight and never mutates the pasteboard.
+    static func quickSelection(from app: NSRunningApplication) -> String? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { return nil }
+        guard let element = focusedElement() else { return nil }
+        if let s = attrString(element, kAXSelectedTextAttribute), !s.isEmpty { return s }
+        if let s = readWebKitSelection(element), !s.isEmpty { return s }
+        return nil
+    }
+
     static func captureFocused() -> Target? {
         let trusted = AXIsProcessTrusted()
         Log.info("captureFocused start trusted=\(trusted) frontmost=\(frontmostDescription())", tag: "ax")

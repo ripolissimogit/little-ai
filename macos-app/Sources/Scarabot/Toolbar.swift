@@ -151,24 +151,29 @@ final class Toolbar {
         }
     }
 
-    /// While the panel is idle (not key), poll the frontmost app every 1s for a
-    /// fresh text selection. If the user highlights new text, the toolbar silently
-    /// adopts it so they can fire another prompt without re-triggering ⇧⇧.
+    /// While the panel is idle (not key), poll the frontmost app every 1.2s for a
+    /// fresh text selection using the lightweight AX-only path. No clipboard
+    /// sniffing, no keystrokes — safe and fast.
     private func startSelectionPoller() {
         stopSelectionPoller()
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.isRefreshing, self.panel?.isKeyWindow == false else { return }
+                guard let app = self.target?.sourceApp else { return }
                 self.isRefreshing = true
-                if let t = AX.captureFocused(),
-                   t.sourceApp?.bundleIdentifier != Bundle.main.bundleIdentifier,
-                   !t.selection.isEmpty,
-                   t.selection != self.target?.selection {
+                if let newSel = AX.quickSelection(from: app), newSel != self.target?.selection {
+                    let t = Target(
+                        selection: newSel,
+                        selectionRect: nil,
+                        fallbackCursor: NSEvent.mouseLocation,
+                        sourceApp: app,
+                        isEditable: self.target?.isEditable ?? false
+                    )
                     self.target = t
-                    self.vm.reset(selection: t.selection, isEditable: t.isEditable)
+                    self.vm.reset(selection: newSel, isEditable: t.isEditable)
                     self.onSelectionRefresh?(t)
                     self.vm.focusRequest.send()
-                    Log.info("selection auto-refreshed len=\(t.selection.count)", tag: "ui")
+                    Log.info("selection auto-refreshed len=\(newSel.count)", tag: "ui")
                 }
                 self.isRefreshing = false
             }
